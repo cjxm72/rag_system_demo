@@ -67,30 +67,47 @@ def retrieve_node(state: AgentState,rag_tool) -> dict:
     }
 
 
-def generate_node(state: AgentState) -> dict:
-    """
-    调用 Qwen 模型，根据 messages 生成最终回答
-    """
-    # 初始化 LLM（你也可以在外面初始化好传进来）
-    llm = initialize_llm()
+_PROMPT_LOGGED = False
 
-    # 获取当前对话历史（此时包含系统提示+上下文+用户问题）
+
+def generate_node(state: AgentState) -> dict:
+    global _PROMPT_LOGGED
+    llm = initialize_llm()
     messages = state["messages"]
 
-    # 调用模型生成回答
+    # 提取用户问题
+    user_question = ""
+    context = ""
+    for msg in messages:
+        if isinstance(msg, HumanMessage):
+            user_question = msg.content
+        elif isinstance(msg, SystemMessage):
+            # 从系统消息里提取上下文（可选）
+            if "--- 检索到的相关文档 ---" in msg.content:
+                parts = msg.content.split("--- 检索到的相关文档 ---")
+                if len(parts) > 1:
+                    context = parts[1].split("--- 请严格根据")[0].strip()
+
     response = llm.invoke(messages)
 
-    # 打印 Qwen 收到的完整 Prompt（调试神器！）
-    print(f"\n🤖 [Qwen 收到的 Prompt]:")
-    for msg in messages:
-        print(f"  {type(msg).__name__}: {msg.content[:200]}...")
+    # 第一次打印系统提示词
+    if not _PROMPT_LOGGED:
+        print("\n" + "=" * 60)
+        print("🤖 系统提示词（仅首次显示）")
+        for msg in messages:
+            if isinstance(msg, SystemMessage):
+                print(msg.content)
+                break
+        print("=" * 60 + "\n")
+        _PROMPT_LOGGED = True
 
-    print(f"\n✅ [Qwen 生成的回答]: {response.content}")
+    # 每次只打印简洁问答
+    print(f"📥 [用户提问] {user_question}")
+    if context:
+        print(f"📄 [参考上下文] {context}")
+    print(f"✅ [AI回复] {response.content}\n")
 
-    # 返回最终回答（作为新的 messages）
-    return {
-        "messages": [response]
-    }
+    return {"messages": [response]}
 
 
 def create_workflow(rag_tool):
