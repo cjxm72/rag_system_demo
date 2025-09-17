@@ -1,17 +1,18 @@
 import os
 # 强制离线
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
+os.environ["OPENAI_API_KEY"] = "sk-disabled"
+os.environ["OPENAI_API_BASE"] = "http://0.0.0.0"
+os.environ["LLAMA_INDEX_DISABLE_OPENAI"] = "1"
 import sys
 from fastapi import FastAPI, HTTPException
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
-from nltk.corpus.reader import documents
+
 from pydantic import BaseModel
 from typing import List
 from rag_system import RAGSystem, RAGTool
-from agent import create_agent, create_workflow
+from agent import  create_workflow
 from config_loader import load_config
 
 
@@ -52,8 +53,7 @@ class QueryResponse(BaseModel):
     thread_id: str
 
 rag_tool = RAGTool(rag_system=rag_system)
-agent = create_agent(rag_tool)
-workflow = create_workflow(agent)
+workflow = create_workflow(rag_tool)
 @app.post("/query",response_model=QueryResponse)
 async def query_documents(request: QueryRequest):
     try:
@@ -66,6 +66,9 @@ async def query_documents(request: QueryRequest):
             thread_id=request.thread_id
         )
     except Exception as e:
+        import traceback
+        print("500  ❌ 查询失败！")
+        print(traceback.format_exc())  # ← 打印完整错误堆栈！
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

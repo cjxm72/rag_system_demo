@@ -14,25 +14,31 @@ import numpy as np
 import faiss
 import os
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.core.retrievers import BaseRetriever
+from llama_index.core.schema import NodeWithScore
 
 from config_loader import load_config
 
 config = load_config()
 
-class HybridRetriever:
-
-    def __init__(self,vector_retriever,keyword_retriever):
+class HybridRetriever(BaseRetriever):
+    def __init__(self, vector_retriever, keyword_retriever):
         self.vector_retriever = vector_retriever
         self.keyword_retriever = keyword_retriever
         self.hybrid_ratio = config.retrieval.hybrid_ratio
 
-    def retrieve(self,query:str):
-        vector_results = self.vector_retriever(query)
-        keyword_results = self.keyword_retriever(query)
+    def _retrieve(self, query: str) -> List[NodeWithScore]:
+        if isinstance(query, QueryBundle):
+            query_str = query.query_str
+        else:
+            query_str = str(query)
+
+        vector_results = self.vector_retriever.retrieve(query_str)
+        keyword_results = self.keyword_retriever.retrieve(query_str)
 
         all_results = {}
         for r in vector_results:
-            all_results[r.node.node_id] = (r,self.hybrid_ratio*r.score)
+            all_results[r.node.node_id] = (r, self.hybrid_ratio * r.score)
 
         for r in keyword_results:
             if r.node.node_id in all_results:
@@ -40,21 +46,23 @@ class HybridRetriever:
                 all_results[r.node.node_id] = (r, old_score + (1 - self.hybrid_ratio) * r.score)
             else:
                 all_results[r.node.node_id] = (r, (1 - self.hybrid_ratio) * r.score)
+
         sorted_results = sorted(all_results.values(), key=lambda x: x[1], reverse=True)
         return [r[0] for r in sorted_results]
-
 
 class RAGSystem:
 
     def __init__(self):
-        self.vector_store = FaissVectorStore(faiss_index = faiss.IndexFlatL2(1536))
-        self.storage_context = StorageContext.from_defaults(vector_store = self.vector_store)
-
         self.embed_model = HuggingFaceEmbedding(model_name=config.models["embedding"].model_path)
-
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.embed_model._model.to(device)  # ⚠️ 访问内部 SentenceTransformer 模型
-        print(f"✅ Embedding model loaded on device: {device}")
+
+        self.embed_model._model.to(device)
+
+        test_embedding = self.embed_model.get_text_embedding("test")
+        embed_dim = len(test_embedding)
+
+        self.vector_store = FaissVectorStore(faiss_index = faiss.IndexFlatL2(embed_dim))
+        self.storage_context = StorageContext.from_defaults(vector_store = self.vector_store)
 
         self.reranker = SentenceTransformerRerank(
             top_n = config.vector_store.similarity_top_k,
@@ -81,7 +89,8 @@ class RAGSystem:
         )
         keyword_retriever = self.index.as_retriever(
             retriever_mode="keyword",
-            similarity_top_k=config.vector_store.similarity_top_k * 2
+            similarity_top_k=config.vector_store.similarity_top_k * 2,
+            llm = None
         )
 
         self.retriever = HybridRetriever(vector_retriever,keyword_retriever)
@@ -90,13 +99,12 @@ class RAGSystem:
         if not self.index:
             raise ValueError("请先加载文档")
 
-        query_engine = RetrieverQueryEngine(
-            retriever=self.retriever,
-            node_postprocessors=[self.reranker],
-            response_mode = "compact"
-        )
-        response = query_engine.query(question)
-        return str(response)
+        nodes = self.retriever.retrieve(question)
+        if not nodes:
+            return "未找到相关结果。"
+        # 返回最相关的一个片段
+        print(f"[RAGSystem] 原始检索结果: {nodes[0].text}")
+        return nodes[0].text
 
 class RAGTool(BaseTool):
 
