@@ -1,75 +1,269 @@
 import os
-# 强制离线
-os.environ["OPENAI_API_KEY"] = "sk-disabled"
-os.environ["OPENAI_API_BASE"] = "http://0.0.0.0"
-os.environ["LLAMA_INDEX_DISABLE_OPENAI"] = "1"
 import sys
-from fastapi import FastAPI, HTTPException
+import uuid
+from typing import Optional, List
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
-
-from pydantic import BaseModel
-from typing import List
-from rag_system import RAGSystem, RAGTool
-from agent import  create_workflow
-from config_loader import load_config
-
-
-
-current_dir = os.path.dirname(os.path.abspath(__file__))
-# 获取项目根目录
 project_root = os.path.dirname(current_dir)
-# 切换工作目录到项目根目录
 os.chdir(project_root)
-# 将项目根目录加入 sys.path，确保模块导入正常
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-app = FastAPI(title="企业数据管理秘书系统")
+from src.config_loader import load_config
+from src.store import (
+    list_documents,
+    list_groups,
+    add_document,
+    delete_document,
+    add_group,
+    update_group,
+    get_group,
+    delete_group,
+    get_embedding_model,
+)
+from src.rag_system import ensure_index, invalidate_index
+from src.agent import create_workflow
+from src.vision_api import describe_image
+from src.doc_parser import parse_file
+from src.eval_rag import evaluate_items, EvalItem
 
-
+app = FastAPI(title="企业数据管理秘书 · RAG（全在线）")
 config = load_config()
 
-rag_system = RAGSystem()
+# 请求体：前端 LocalStorage 的配置
+class RequestSettings(BaseModel):
+    api_key: Optional[str] = None
+    api_base: Optional[str] = None
+    embedding_model: Optional[str] = None
+    reranker_model: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    ollama_base_url: Optional[str] = None
+    vision_model: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
 
-@app.on_event("startup")
-async def startup_event():
-    from llama_index.core import SimpleDirectoryReader
 
-    if not os.path.exists("./data/documents"):
-        os.makedirs("./data/documents")
-        print("请将内容放入./data/documents中")
-        return
-    document = SimpleDirectoryReader("./data/documents").load_data()
-    rag_system.load_document(document)
+class GroupSelection(BaseModel):
+    id: str
+    priority: Optional[float] = 1.0
+
 
 class QueryRequest(BaseModel):
     question: str
+    group_id: str = ""  # 兼容旧字段：若 groups 为空且该字段非空，则视为单组选中
+    groups: Optional[List[GroupSelection]] = None  # 新字段：支持多组 + priority
     thread_id: str = "default"
+    image_base64: Optional[str] = None
+    settings: Optional[RequestSettings] = None
+
 
 class QueryResponse(BaseModel):
     answer: str
     thread_id: str
 
-rag_tool = RAGTool(rag_system=rag_system)
-workflow = create_workflow(rag_tool)
-@app.post("/query",response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
+
+# URL 归一化：确保有 http(s)://
+def _normalize_base_url(url: str, default: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return default
+    if u.startswith("http://") or u.startswith("https://"):
+        return u
+    # 兼容用户只填了域名/host:port 的情况
+    return "https://" + u.lstrip("/")
+
+
+# 确保 settings 转成扁平 dict 供 agent/rag 使用
+def _settings_dict(s: Optional[RequestSettings]) -> dict:
+    if not s:
+        return {}
+    api_base = _normalize_base_url(s.api_base or "", "https://api.siliconflow.cn/v1")
+    ollama_base = (s.ollama_base_url or "").strip()
+    if ollama_base and not (ollama_base.startswith("http://") or ollama_base.startswith("https://")):
+        # ollama 多数是本地 http
+        ollama_base = "http://" + ollama_base.lstrip("/")
+    elif not ollama_base:
+        ollama_base = "http://localhost:11434/v1"
+    return {
+        "api_key": s.api_key or "",
+        "api_base": api_base,
+        "embedding_model": s.embedding_model or "Qwen/Qwen3-Embedding-0.6B",
+        "reranker_model": s.reranker_model or "Qwen/Qwen3-Reranker-0.6B",
+        "llm_provider": s.llm_provider or "siliconflow",
+        "llm_model": s.llm_model or "Pro/deepseek-ai/DeepSeek-V3.2",
+        "ollama_base_url": ollama_base,
+        "vision_model": s.vision_model or "Qwen/Qwen2-VL-7B-Instruct",
+        "temperature": s.temperature if s.temperature is not None else 0.7,
+        "max_tokens": s.max_tokens if s.max_tokens is not None else 2000,
+    }
+
+
+workflow = create_workflow()
+
+# 静态前端
+static_dir = os.path.join(project_root, "static")
+if os.path.isdir(static_dir):
+    @app.get("/")
+    def index():
+        return FileResponse(os.path.join(static_dir, "index.html"))
+
+    @app.get("/settings")
+    def settings_page():
+        p = os.path.join(static_dir, "settings.html")
+        if os.path.isfile(p):
+            return FileResponse(p)
+        return FileResponse(os.path.join(static_dir, "index.html"))
+
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+@app.post("/query", response_model=QueryResponse)
+async def post_query(req: QueryRequest):
     try:
-        result = workflow.invoke(
-            {"question": request.question},
-            {"configurable": {"thread_id": request.thread_id}}
-        )
-        return   QueryResponse(
-            answer=result["messages"][-1].content,
-            thread_id=request.thread_id
-        )
+        question = req.question.strip()
+        settings = _settings_dict(req.settings)
+        if req.image_base64:
+            desc = describe_image(
+                req.image_base64,
+                api_key=settings.get("api_key") or "",
+                vision_model=settings.get("vision_model") or "Qwen/Qwen2-VL-7B-Instruct",
+                api_base=settings.get("api_base") or "https://api.siliconflow.cn/v1",
+            )
+            question = f"[图片内容]\n{desc}\n\n[用户问题]\n{question}"
+        # 组选择：优先使用 new groups 字段，否则回退到单一 group_id
+        groups_payload: List[dict] = []
+        if req.groups:
+            for g in req.groups:
+                groups_payload.append({"id": g.id, "priority": g.priority or 1.0})
+        elif req.group_id:
+            groups_payload.append({"id": req.group_id, "priority": 1.0})
+
+        state = {
+            "question": question,
+            "groups": groups_payload,
+            "settings": settings,
+        }
+        result = workflow.invoke(state, {"configurable": {"thread_id": req.thread_id}})
+        answer = result["messages"][-1].content if result.get("messages") else ""
+        return QueryResponse(answer=answer, thread_id=req.thread_id)
     except Exception as e:
         import traceback
-        print("500  ❌ 查询失败！")
-        print(traceback.format_exc())  # ← 打印完整错误堆栈！
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/documents")
+def get_documents():
+    return {"documents": list_documents()}
+
+
+@app.post("/documents/upload")
+async def upload_document(
+    file: List[UploadFile] = File(...),
+    api_key: str = Form(""),
+    embedding_model: str = Form("Qwen/Qwen3-Embedding-0.6B"),
+    api_base: str = Form("https://api.siliconflow.cn/v1"),
+    vision_model: str = Form("Qwen/Qwen2-VL-7B-Instruct"),
+):
+    if not file:
+        raise HTTPException(400, "缺少文件")
+    upload_dir = os.path.join(project_root, "data", "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    results = []
+    for fup in file:
+        if not fup.filename:
+            continue
+        ext = os.path.splitext(fup.filename)[1].lower()
+        path = os.path.join(upload_dir, f"{uuid.uuid4().hex}{ext}")
+        content = await fup.read()
+        with open(path, "wb") as wf:
+            wf.write(content)
+        text = parse_file(path, api_key=api_key or None, vision_model=vision_model or None, api_base=api_base)
+        doc_id = add_document(name=fup.filename, path_or_note=path, text=text)
+        results.append({"id": doc_id, "name": fup.filename})
+    # 文档新增后统一重建索引（单索引）
+    if results:
+        ensure_index(api_key, embedding_model, api_base, force_rebuild=True)
+    return {"uploaded": results}
+
+
+@app.delete("/documents/{doc_id}")
+def remove_document(doc_id: str):
+    delete_document(doc_id)
+    invalidate_index()
+    return {"ok": True}
+
+
+@app.get("/groups")
+def get_groups():
+    return {"groups": list_groups()}
+
+
+class GroupCreate(BaseModel):
+    name: str
+    doc_ids: Optional[List[str]] = None
+
+
+@app.post("/groups")
+def create_group(body: GroupCreate):
+    gid = add_group(name=body.name, doc_ids=body.doc_ids)
+    return {"id": gid, "name": body.name, "doc_ids": body.doc_ids or []}
+
+
+class GroupUpdate(BaseModel):
+    name: Optional[str] = None
+    doc_ids: Optional[List[str]] = None
+
+
+@app.put("/groups/{group_id}")
+def put_group(group_id: str, body: GroupUpdate):
+    ok = update_group(group_id, name=body.name, doc_ids=body.doc_ids)
+    if not ok:
+        raise HTTPException(404, "知识组不存在")
+    return {"ok": True}
+
+
+@app.delete("/groups/{group_id}")
+def remove_group(group_id: str):
+    ok = delete_group(group_id)
+    if not ok:
+        raise HTTPException(404, "知识组不存在")
+    return {"ok": True}
+
+
+class EvalRequestItem(BaseModel):
+    question: str
+    expected: str
+    groups: Optional[List[GroupSelection]] = None
+
+
+class EvalRequest(BaseModel):
+    items: List[EvalRequestItem]
+    settings: RequestSettings
+
+
+@app.post("/evaluate")
+def evaluate(req: EvalRequest):
+    try:
+        settings = _settings_dict(req.settings)
+        items = []
+        for it in req.items:
+            groups_payload = []
+            if it.groups:
+                for g in it.groups:
+                    groups_payload.append({"id": g.id, "priority": g.priority or 1.0})
+            items.append(EvalItem(question=it.question, expected=it.expected, groups=groups_payload))
+        return evaluate_items(items, settings=settings)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn

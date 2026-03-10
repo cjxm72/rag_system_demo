@@ -1,52 +1,49 @@
-import yaml
-from pydantic import BaseModel,Field
-from typing import Dict
+"""
+配置仅提供默认值；API Key、模型名等由前端 LocalStorage 传入请求体。
+"""
 import os
-
+import yaml
+from pydantic import BaseModel, Field
+from typing import Optional
 
 _config = None
 
-class ModelConfig(BaseModel):
-    name: str = Field(..., description="模型名称")
-    provider: str = Field(..., description="模型提供商")
-    api_key: str = Field("", description="API访问密钥")
-    model_path: str = Field("", description="本地模型路径")
 
 class VectorStoreConfig(BaseModel):
-    index_path: str = Field(..., description="FAISS索引存储路径")
-    similarity_top_k: int = Field(5, description="相似度检索返回数量")
+    similarity_top_k: int = Field(5, description="检索返回数量")
+    rerank_top_n: int = Field(5, description="重排序后保留条数")
+
 
 class RetrievalConfig(BaseModel):
-    hybrid_ratio: float = Field(0.7, description="混合检索权重比例")
-    rerank_model: str = Field(..., description="重排序模型名称")
-    model_path: str = Field("", description="本地模型路径")
+    hybrid_ratio: float = Field(0.7, description="向量检索权重，1 为纯向量")
+
 
 class PromptConfig(BaseModel):
-    system: str = Field(..., description="系统角色提示词")
-    retrieval: str = Field(..., description="检索增强生成提示模板")
+    system: str = Field("...", description="系统提示词")
+    retrieval: str = Field("...", description="检索模板")
+
+
+class SiliconFlowConfig(BaseModel):
+    api_base: str = Field("https://api.siliconflow.cn/v1", description="API 基础 URL")
 
 
 class AppConfig(BaseModel):
-    models: Dict[str, ModelConfig]
     vector_store: VectorStoreConfig
     retrieval: RetrievalConfig
     prompts: PromptConfig
+    siliconflow: SiliconFlowConfig
 
 
-def load_config(config_path: str = None) :
+def load_config(config_path: str = None) -> AppConfig:
+    global _config
+    if _config is not None and config_path is None:
+        return _config
     if config_path is None:
-        global _config
-        if _config is not None:
-            return _config
-            # 获取当前文件（config_loader.py）的绝对路径
         current_file_dir = os.path.dirname(os.path.abspath(__file__))
-        # 计算项目根目录
         project_root = os.path.dirname(current_file_dir)
-        # 拼接配置文件路径
         config_path = os.path.join(project_root, "config", "config.yaml")
-
     with open(config_path, "r", encoding="utf-8") as f:
-        raw_config = yaml.safe_load(f)
-    _config = AppConfig(**raw_config)
+        raw = yaml.safe_load(f)
+    raw.setdefault("siliconflow", {"api_base": "https://api.siliconflow.cn/v1"})
+    _config = AppConfig(**raw)
     return _config
-

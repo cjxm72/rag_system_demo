@@ -1,26 +1,17 @@
-models:
-  embedding:
-    name: "local:all-MiniLM-L6-v2"  # 本地嵌入模型路径或名称
-    provider: "local"
-    model_path: "./models/all-MiniLM-L6-v2"    # 本地模型路径
+# 仅作默认/后备，实际以前端 LocalStorage 传入为准
+# 仅支持：硅基流动（测试/生产） + Ollama（本地兼容，改 URL 即可）
 
-  llm:
-    name: "local:Qwen2.5-1.5B-Instruct-GGUF"              # 本地LLM名称
-    provider: "local"
-    model_path: "./models/Qwen2.5-1.5B-Instruct-GGUF"     # 本地模型路径
-
-# FAISS向量库配置
 vector_store:
-  index_path: "./data/faiss_index"  # 索引保存路径
-  similarity_top_k: 5               # 检索返回数量
+  similarity_top_k: 5
+  rerank_top_n: 5
 
-# 检索配置
 retrieval:
-  hybrid_ratio: 0.7                # 混合检索权重（0-1）
-  rerank_model: "local:bge-reranker-base" # 重排序模型
-  model_path: "./models/bge-reranker-base"  # 本地模型路径
+  hybrid_ratio: 0.7
 
-# 系统提示词
 prompts:
-  system: "你是一个专业的企业数据管理秘书，请根据提供的企业文档回答问题。如果不知道答案，请明确表示。"
-  retrieval: "请从以下企业文档中提取相关信息回答问题：\n{context}\n\n问题：{question}"
+  system: "你是一个专业的企业数据管理秘书，请根据提供的文档内容回答问题。若文档中无相关内容，请明确说明。"
+  retrieval: "根据以下文档内容回答问题：\n{context}\n\n问题：{question}"
+
+# 硅基流动默认 base（Ollama 由前端传 base_url）
+siliconflow:
+  api_base: "https://api.siliconflow.cn/v1"
