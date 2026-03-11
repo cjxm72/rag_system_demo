@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>企业数据管理秘书 · RAG</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; padding: 16px; background: #f5f6f8; }
+    .container { max-width: 1100px; margin: 0 auto; }
+    h1 { font-size: 1.25rem; margin-bottom: 4px; }
+    .top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .layout { display: flex; gap: 16px; align-items: flex-start; }
+    .main-pane { flex: 2; }
+    .side-pane { flex: 1; min-width: 260px; }
+    section { background: #fff; border-radius: 8px; border: 1px solid #e2e8f0; padding: 16px; margin-bottom: 16px; }
+    section h2 { font-size: 1rem; margin: 0 0 12px 0; }
+    label { display: block; margin: 8px 0 4px; font-weight: 500; }
+    input, select, textarea { width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; }
+    textarea { min-height: 80px; resize: vertical; }
+    button { padding: 8px 16px; border: none; border-radius: 6px; font-size: 0.95rem; cursor: pointer; background: #2563eb; color: #fff; }
+    button:hover { background: #1d4ed8; }
+    button.secondary { background: #94a3b8; }
+    button.danger { background: #dc2626; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 6px 0; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+    li:last-child { border-bottom: none; }
+    .answer { white-space: pre-wrap; word-break: break-word; padding: 12px; background: #f8fafc; border-radius: 6px; margin-top: 8px; min-height: 80px; }
+    .err { color: #b91c1c; margin-top: 8px; }
+    .img-preview { max-width: 160px; max-height: 100px; border-radius: 6px; margin-top: 4px; }
+    .hint { color: #64748b; font-size: 0.85rem; }
+    .tag { padding: 2px 6px; border-radius: 999px; background: #eff6ff; color: #1d4ed8; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="top">
+      <h1>企业数据管理秘书</h1>
+      <a href="/settings">设置（API Key / 模型）</a>
+    </div>
+
+    <div class="layout">
+      <div class="main-pane">
+        <section>
+          <h2>对话</h2>
+          <div class="row" style="justify-content: space-between; margin-bottom: 4px;">
+            <span class="hint">支持从右侧选择多个知识组，并可附带图片。</span>
+            <button id="newChatBtn" class="secondary">新对话</button>
+          </div>
+          <div id="chat" style="display:flex; flex-direction:column; gap:10px; max-height:520px; overflow:auto; padding:8px; border:1px solid #e2e8f0; border-radius:8px; background:#fafafa; margin-bottom:10px;"></div>
+          <label>输入</label>
+          <textarea id="question" placeholder="输入问题，回车换行，点击发送…"></textarea>
+          <div class="row" style="margin-top:8px">
+            <input type="file" id="imgInput" accept="image/*" />
+            <button id="clearImg">清除图片</button>
+          </div>
+          <img id="imgPreview" class="img-preview" alt="" style="display:none" />
+          <div style="margin-top:12px">
+            <button id="sendBtn">发送</button>
+          </div>
+          <div id="error" class="err" style="display:none"></div>
+        </section>
+      </div>
+
+      <aside class="side-pane">
+        <section>
+          <h2>知识组</h2>
+          <div class="row" style="margin-bottom:8px;">
+            <button id="createGroupBtn">新建知识组</button>
+            <span class="hint">勾选参与本轮检索的组，可设置主/次组权重。</span>
+          </div>
+          <ul id="groupFilterList"></ul>
+          <hr style="margin:12px 0;">
+          <label>编辑组内文档</label>
+          <div class="row">
+            <select id="groupSelect">
+              <option value="">-- 选择要编辑的组 --</option>
+            </select>
+          </div>
+          <div id="groupDocEdit" style="display:none; margin-top:8px;">
+            <p class="hint">勾选属于该组的文档，然后点击「保存组内文档」。</p>
+            <ul id="groupDocList"></ul>
+            <button id="saveGroupDocs" class="secondary">保存组内文档</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>文档</h2>
+          <div class="row">
+            <input type="file" id="fileInput" multiple accept=".pdf,.txt,.md,.jpg,.jpeg,.png,.bmp,.gif,.webp" />
+            <button id="uploadBtn">上传</button>
+          </div>
+          <ul id="docList"></ul>
+          <p class="hint" style="margin-top:8px;">文档上传后会后台解析并显示进度；解析完成后即可用于检索。</p>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    const KEY = "rag_settings";
+    const base = window.location.origin || "";
+
+    function getSettings() {
+      try {
+        return JSON.parse(localStorage.getItem(KEY) || "{}");
+      } catch (_) {
+        return {};
+      }
+    }
+
+    async function api(method, path, body) {
+      const opt = { method, headers: {} };
+      if (body && typeof body === "object" && !(body instanceof FormData)) {
+        opt.headers["Content-Type"] = "application/json";
+        opt.body = JSON.stringify(body);
+      } else if (body instanceof FormData) {
+        opt.body = body;
+      }
+      const r = await fetch(base + path, opt);
+      const data = r.ok ? await r.json().catch(() => ({})) : { detail: await r.text() };
+      if (!r.ok) throw new Error(data.detail || data.message || r.statusText);
+      return data;
+    }
+
+    const CHAT_KEY_PREFIX = "rag_chat_";
+    let allDocs = [];
+    let allGroups = [];
+    let currentThreadId = "thread-" + Date.now();
+    let messages = []; // {role:'user'|'assistant', content:string}
+
+    function chatKey() { return CHAT_KEY_PREFIX + currentThreadId; }
+
+    function loadChat() {
+      try {
+        messages = JSON.parse(localStorage.getItem(chatKey()) || "[]");
+      } catch (_) { messages = []; }
+      renderChat();
+    }
+
+    function saveChat() {
+      localStorage.setItem(chatKey(), JSON.stringify(messages));
+    }
+
+    function renderChat() {
+      const box = document.getElementById("chat");
+      box.innerHTML = "";
+      messages.forEach(m => {
+        const item = document.createElement("div");
+        const isUser = m.role === "user";
+        item.style.alignSelf = isUser ? "flex-end" : "flex-start";
+        item.style.maxWidth = "85%";
+        item.style.padding = "10px 12px";
+        item.style.borderRadius = "10px";
+        item.style.whiteSpace = "pre-wrap";
+        item.style.wordBreak = "break-word";
+        item.style.background = isUser ? "#2563eb" : "#ffffff";
+        item.style.color = isUser ? "#ffffff" : "#0f172a";
+        item.style.border = isUser ? "none" : "1px solid #e2e8f0";
+        item.textContent = m.content || "";
+        box.appendChild(item);
+      });
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function loadGroups() {
+      const res = await api("GET", "/groups");
+      allGroups = res.groups || [];
+
+      // 下拉：用于编辑组内文档
+      const sel = document.getElementById("groupSelect");
+      sel.innerHTML = '<option value="">-- 选择要编辑的组 --</option>';
+      allGroups.forEach(g => {
+        const o = document.createElement("option");
+        o.value = g.id;
+        o.textContent = g.name || g.id;
+        sel.appendChild(o);
+      });
+      sel.onchange = showGroupDocEdit;
+
+      // 右侧勾选 + 主/次组权重
+      const gList = document.getElementById("groupFilterList");
+      gList.innerHTML = "";
+      allGroups.forEach(g => {
+        const li = document.createElement("li");
+        const left = document.createElement("div");
+        left.style.display = "flex";
+        left.style.alignItems = "center";
+        left.style.gap = "6px";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.dataset.id = g.id;
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = g.name || g.id;
+        left.appendChild(cb);
+        left.appendChild(nameSpan);
+
+        const selPri = document.createElement("select");
+        selPri.dataset.id = g.id;
+        selPri.innerHTML = `
+          <option value="1">主组</option>
+          <option value="0.5">次要</option>
+          <option value="0.2">弱</option>
+        `;
+        li.appendChild(left);
+        li.appendChild(selPri);
+        gList.appendChild(li);
+      });
+
+      showGroupDocEdit();
+    }
+
+    async function loadDocuments() {
+      const res = await api("GET", "/documents");
+      allDocs = res.documents || [];
+      const ul = document.getElementById("docList");
+      ul.innerHTML = "";
+      allDocs.forEach(d => {
+        const li = document.createElement("li");
+        const status = d.status ? ` <span class="tag">${escapeHtml(d.status)}</span>` : "";
+        const prog = (d.progress != null) ? ` <span class="hint">${d.progress}%</span>` : "";
+        const err = d.error ? ` <div class="hint" style="color:#b91c1c; margin-top:4px;">${escapeHtml(d.error)}</div>` : "";
+        li.innerHTML = `<div style="display:flex; flex-direction:column; gap:2px;"><div><span>${escapeHtml(d.name || d.id)}</span>${status}${prog}</div>${err}</div><button class="danger" data-id="${escapeHtml(d.id)}">删除</button>`;
+        li.querySelector("button").onclick = () => deleteDoc(d.id);
+        ul.appendChild(li);
+      });
+      showGroupDocEdit();
+    }
+
+    function showGroupDocEdit() {
+      const gid = document.getElementById("groupSelect").value;
+      const box = document.getElementById("groupDocEdit");
+      const list = document.getElementById("groupDocList");
+      if (!gid) { box.style.display = "none"; return; }
+      const g = allGroups.find(x => x.id === gid);
+      const docIds = (g && g.doc_ids) ? g.doc_ids : [];
+      list.innerHTML = "";
+      allDocs.forEach(d => {
+        const li = document.createElement("li");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = docIds.includes(d.id);
+        cb.dataset.id = d.id;
+        li.appendChild(cb);
+        li.appendChild(document.createTextNode(" " + (d.name || d.id)));
+        list.appendChild(li);
+      });
+      box.style.display = "block";
+    }
+
+    document.getElementById("saveGroupDocs").onclick = async () => {
+      const gid = document.getElementById("groupSelect").value;
+      if (!gid) return;
+      const list = document.getElementById("groupDocList");
+      const docIds = Array.from(list.querySelectorAll("input:checked")).map(cb => cb.dataset.id);
+      await api("PUT", "/groups/" + encodeURIComponent(gid), { doc_ids: docIds });
+      loadGroups();
+    };
+
+    function escapeHtml(s) {
+      const div = document.createElement("div");
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    async function deleteDoc(id) {
+      if (!confirm("确定删除该文档？")) return;
+      await api("DELETE", "/documents/" + encodeURIComponent(id));
+      loadDocuments();
+    }
+
+    document.getElementById("createGroupBtn").onclick = async () => {
+      const name = prompt("知识组名称");
+      if (!name) return;
+      await api("POST", "/groups", { name, doc_ids: [] });
+      loadGroups();
+    };
+
+    document.getElementById("uploadBtn").onclick = async () => {
+      const files = Array.from(document.getElementById("fileInput").files || []);
+      if (!files.length) { alert("请选择文件"); return; }
+      const s = getSettings();
+      try {
+        // 逐个上传：避免一次性解析太久导致前端无响应，也更容易看到进度
+        for (const file of files) {
+          const fd = new FormData();
+          fd.append("file", file); // 后端支持单个或多个 file 字段，这里逐个发
+          fd.append("api_key", s.api_key || "");
+          fd.append("embedding_model", s.embedding_model || "Qwen/Qwen3-Embedding-0.6B");
+          fd.append("api_base", s.api_base || "https://api.siliconflow.cn/v1");
+          fd.append("vision_model", s.vision_model || "Qwen/Qwen2-VL-7B-Instruct");
+          await api("POST", "/documents/upload", fd);
+        }
+        document.getElementById("fileInput").value = "";
+        loadDocuments();
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+
+    let imageDataUrl = null;
+    document.getElementById("imgInput").onchange = function () {
+      const f = this.files && this.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => { imageDataUrl = r.result; document.getElementById("imgPreview").src = imageDataUrl; document.getElementById("imgPreview").style.display = "block"; };
+      r.readAsDataURL(f);
+    };
+    document.getElementById("clearImg").onclick = () => {
+      document.getElementById("imgInput").value = "";
+      imageDataUrl = null;
+      document.getElementById("imgPreview").src = "";
+      document.getElementById("imgPreview").style.display = "none";
+    };
+
+    document.getElementById("newChatBtn").onclick = () => {
+      currentThreadId = "thread-" + Date.now();
+      document.getElementById("question").value = "";
+      document.getElementById("error").style.display = "none";
+      messages = [];
+      saveChat();
+      renderChat();
+    };
+
+    async function streamAnswer(body, onDelta) {
+      const r = await fetch(base + "/query/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(t || r.statusText);
+      }
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        if (chunk) onDelta(chunk);
+      }
+    }
+
+    document.getElementById("sendBtn").onclick = async () => {
+      const q = document.getElementById("question").value.trim();
+      if (!q) { alert("请输入问题"); return; }
+      const s = getSettings();
+      if (!s.api_key && (s.llm_provider || "siliconflow") === "siliconflow") {
+        alert("请先在设置中填写硅基流动 API Key");
+        return;
+      }
+      document.getElementById("error").style.display = "none";
+      // 在推入本轮消息前先拷贝一份历史，用于传给后端增强记忆
+      const history = messages.map(m => ({ role: m.role, content: m.content }));
+      // push user message
+      messages.push({ role: "user", content: q });
+      // assistant placeholder
+      const assistantIndex = messages.length;
+      messages.push({ role: "assistant", content: "" });
+      saveChat();
+      renderChat();
+
+      // 组选择：构造 groups 数组 [{id, priority}]
+      const groups = [];
+      document.querySelectorAll("#groupFilterList input[type=checkbox]").forEach(cb => {
+        if (cb.checked) {
+          const gid = cb.dataset.id;
+          const selPri = document.querySelector(`#groupFilterList select[data-id="${gid}"]`);
+          const pri = selPri ? parseFloat(selPri.value || "1") : 1;
+          groups.push({ id: gid, priority: pri });
+        }
+      });
+
+      const body = {
+        question: q,
+        groups,
+        thread_id: currentThreadId,
+        history,
+        settings: {
+          api_key: s.api_key,
+          api_base: s.api_base || "https://api.siliconflow.cn/v1",
+          embedding_model: s.embedding_model || "Qwen/Qwen3-Embedding-0.6B",
+          reranker_model: s.reranker_model || "Qwen/Qwen3-Reranker-0.6B",
+          llm_provider: s.llm_provider || "siliconflow",
+          llm_model: s.llm_model || "Pro/deepseek-ai/DeepSeek-V3.2",
+          ollama_base_url: s.ollama_base_url || "http://localhost:11434/v1",
+          vision_model: s.vision_model || "Qwen/Qwen2-VL-7B-Instruct",
+          temperature: s.temperature != null ? s.temperature : 0.7,
+          max_tokens: s.max_tokens != null ? s.max_tokens : 2000,
+        },
+      };
+      if (imageDataUrl) body.image_base64 = imageDataUrl;
+      try {
+        await streamAnswer(body, (delta) => {
+          messages[assistantIndex].content += delta;
+          saveChat();
+          renderChat();
+        });
+        document.getElementById("question").value = "";
+      } catch (e) {
+        document.getElementById("error").textContent = e.message;
+        document.getElementById("error").style.display = "block";
+      }
+    };
+
+    loadGroups();
+    loadDocuments();
+    loadChat();
+    // 轮询进度（后台解析）
+    setInterval(loadDocuments, 1500);
+  </script>
+</body>
+</html>

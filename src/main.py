@@ -1,8 +1,8 @@
 import os
 import sys
 import uuid
-from typing import Optional, List
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from typing import Optional, List, Literal
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -20,18 +20,21 @@ from src.store import (
     list_documents,
     list_groups,
     add_document,
+    add_document_placeholder,
     delete_document,
     add_group,
     update_group,
     get_group,
     delete_group,
     get_embedding_model,
+    update_document,
 )
 from src.rag_system import ensure_index, invalidate_index
 from src.agent import create_workflow
 from src.vision_api import describe_image
 from src.doc_parser import parse_file
 from src.eval_rag import evaluate_items, EvalItem
+from fastapi.responses import StreamingResponse
 
 app = FastAPI(title="企业数据管理秘书 · RAG（全在线）")
 config = load_config()
@@ -55,12 +58,18 @@ class GroupSelection(BaseModel):
     priority: Optional[float] = 1.0
 
 
+class ChatHistoryItem(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class QueryRequest(BaseModel):
     question: str
     group_id: str = ""  # 兼容旧字段：若 groups 为空且该字段非空，则视为单组选中
     groups: Optional[List[GroupSelection]] = None  # 新字段：支持多组 + priority
     thread_id: str = "default"
     image_base64: Optional[str] = None
+    history: Optional[List[ChatHistoryItem]] = None  # 供流式接口构造历史对话
     settings: Optional[RequestSettings] = None
 
 
@@ -159,6 +168,78 @@ async def post_query(req: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/query/stream")
+async def post_query_stream(req: QueryRequest):
+    """
+    流式回答（text/plain 流）：先检索，再流式输出 LLM token。
+    前端用 fetch 读取 ReadableStream 即可实现“边生成边显示”。
+    """
+    try:
+        question = req.question.strip()
+        settings = _settings_dict(req.settings)
+
+        if req.image_base64:
+            desc = describe_image(
+                req.image_base64,
+                api_key=settings.get("api_key") or "",
+                vision_model=settings.get("vision_model") or "Qwen/Qwen2-VL-7B-Instruct",
+                api_base=settings.get("api_base") or "https://api.siliconflow.cn/v1",
+            )
+            question = f"[图片内容]\n{desc}\n\n[用户问题]\n{question}"
+
+        groups_payload: List[dict] = []
+        if req.groups:
+            for g in req.groups:
+                groups_payload.append({"id": g.id, "priority": g.priority or 1.0})
+        elif req.group_id:
+            groups_payload.append({"id": req.group_id, "priority": 1.0})
+
+        from src.agent import initialize_llm
+        from src.rag_system import query as rag_query
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        api_key = settings.get("api_key") or ""
+        api_base = settings.get("api_base") or "https://api.siliconflow.cn/v1"
+        context = rag_query(
+            question=question,
+            selected_groups=groups_payload,
+            api_key=api_key,
+            embedding_model=settings.get("embedding_model") or "Qwen/Qwen3-Embedding-0.6B",
+            reranker_model=settings.get("reranker_model") or "Qwen/Qwen3-Reranker-0.6B",
+            api_base=api_base,
+            rerank_top_n=config.vector_store.rerank_top_n,
+            similarity_top_k=config.vector_store.similarity_top_k * 2,
+        )
+        # 将前端传来的历史对话拼进提示词，增强记忆感
+        history_items = req.history or []
+        hist_str = ""
+        for h in history_items:
+            prefix = "用户" if h.role == "user" else "助手"
+            hist_str += f"{prefix}：{h.content}\n"
+
+        system_prompt = config.prompts.system
+        if hist_str.strip():
+            system_prompt += "\n\n--- 历史对话 ---\n" + hist_str
+        system_prompt += "\n\n--- 检索到的相关文档 ---\n" + context
+        system_prompt += "\n\n--- 请严格根据以上内容回答当前问题，不要编造 ---"
+
+        llm = initialize_llm(settings)
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=question)]
+
+        def gen():
+            try:
+                for chunk in llm.stream(messages):
+                    text = getattr(chunk, "content", "") or ""
+                    if text:
+                        yield text
+            except Exception as e:
+                yield f"\n\n[STREAM_ERROR] {e}"
+
+        return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/documents")
 def get_documents():
     return {"documents": list_documents()}
@@ -167,6 +248,7 @@ def get_documents():
 @app.post("/documents/upload")
 async def upload_document(
     file: List[UploadFile] = File(...),
+    background_tasks: BackgroundTasks = None,
     api_key: str = Form(""),
     embedding_model: str = Form("Qwen/Qwen3-Embedding-0.6B"),
     api_base: str = Form("https://api.siliconflow.cn/v1"),
@@ -177,6 +259,7 @@ async def upload_document(
     upload_dir = os.path.join(project_root, "data", "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     results = []
+    api_base = _normalize_base_url(api_base, "https://api.siliconflow.cn/v1")
     for fup in file:
         if not fup.filename:
             continue
@@ -185,12 +268,30 @@ async def upload_document(
         content = await fup.read()
         with open(path, "wb") as wf:
             wf.write(content)
-        text = parse_file(path, api_key=api_key or None, vision_model=vision_model or None, api_base=api_base)
-        doc_id = add_document(name=fup.filename, path_or_note=path, text=text)
-        results.append({"id": doc_id, "name": fup.filename})
-    # 文档新增后统一重建索引（单索引）
-    if results:
-        ensure_index(api_key, embedding_model, api_base, force_rebuild=True)
+        doc_id = add_document_placeholder(name=fup.filename, path_or_note=path)
+        results.append({"id": doc_id, "name": fup.filename, "status": "queued"})
+
+        def _parse_and_index(doc_id_inner: str, path_inner: str):
+            try:
+                update_document(doc_id_inner, status="parsing", progress=10, error="")
+                text = parse_file(
+                    path_inner,
+                    api_key=api_key or None,
+                    vision_model=vision_model or None,
+                    api_base=api_base,
+                )
+                update_document(doc_id_inner, text=text, status="embedding", progress=70)
+                # 单索引：解析完成后立即重建索引，保证马上可检索
+                ensure_index(api_key, embedding_model, api_base, force_rebuild=True)
+                update_document(doc_id_inner, status="done", progress=100)
+            except Exception as e:
+                update_document(doc_id_inner, status="error", progress=100, error=str(e))
+
+        if background_tasks is not None:
+            background_tasks.add_task(_parse_and_index, doc_id, path)
+        else:
+            _parse_and_index(doc_id, path)
+
     return {"uploaded": results}
 
 
@@ -267,4 +368,4 @@ def evaluate(req: EvalRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

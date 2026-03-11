@@ -5,7 +5,7 @@
 import os
 import json
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(_current_dir)
@@ -51,9 +51,40 @@ def add_document(name: str, path_or_note: str, text: str) -> str:
         "name": name,
         "path": path_or_note,
         "text": text,
+        "status": "done",
+        "progress": 100,
+        "error": "",
     })
     _save_raw(data)
     return doc_id
+
+
+def add_document_placeholder(name: str, path_or_note: str) -> str:
+    """上传后先占位，后台解析时更新 text/status/progress。"""
+    data = _load_raw()
+    doc_id = str(uuid.uuid4())
+    data.setdefault("documents", []).append({
+        "id": doc_id,
+        "name": name,
+        "path": path_or_note,
+        "text": "",
+        "status": "queued",
+        "progress": 0,
+        "error": "",
+    })
+    _save_raw(data)
+    return doc_id
+
+
+def update_document(doc_id: str, **fields) -> bool:
+    data = _load_raw()
+    for d in data.get("documents", []):
+        if d.get("id") == doc_id:
+            for k, v in fields.items():
+                d[k] = v
+            _save_raw(data)
+            return True
+    return False
 
 
 def get_document(doc_id: str) -> Dict[str, Any] | None:

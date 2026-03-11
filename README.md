@@ -60,16 +60,5 @@ uv sync
 
 ## 常见问题排查
 
-### 1) `Temporary failure in name resolution`
-
-这是 DNS/网络问题（环境无法解析 `api.siliconflow.cn`），不是代码逻辑问题。可先在服务器上执行：
-
-```bash
-getent hosts api.siliconflow.cn
-curl -I https://api.siliconflow.cn/v1
-```
-
-- 如果解析失败：检查 `/etc/resolv.conf`、公司网络 DNS、是否需要代理；
-- 如果 curl 也失败：检查外网连通性、防火墙策略；
-- 如果公司要求代理：配置 `HTTP_PROXY/HTTPS_PROXY` 后再运行服务。
+（如需记录某次真实故障，请写入 `docs/CHANGELOG_DEBUG.md`。）
 
