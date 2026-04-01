@@ -41,8 +41,17 @@
     <option value="ollama">Ollama（本地/自建）</option>
   </select>
 
-  <label>回答用 LLM 模型名</label>
+  <label>回答用 LLM 模型名（默认）</label>
   <input type="text" id="llm_model" placeholder="Pro/deepseek-ai/DeepSeek-V3.2" />
+
+  <label>医疗 Agent 模型（可选，不填则用默认）</label>
+  <input type="text" id="llm_model_medical" placeholder="与默认相同可留空" />
+
+  <label>法律 Agent 模型（可选）</label>
+  <input type="text" id="llm_model_legal" placeholder="与默认相同可留空" />
+
+  <label>协调者 Team 模型（可选，负责路由与调用成员）</label>
+  <input type="text" id="llm_model_coordinator" placeholder="与默认相同可留空" />
 
   <label>Ollama Base URL（仅当提供商选 Ollama 时有效）</label>
   <input type="text" id="ollama_base_url" placeholder="http://localhost:11434/v1" />
@@ -66,7 +75,8 @@
     const KEY = "rag_settings";
     const fields = [
       "api_key", "api_base", "embedding_model", "reranker_model",
-      "llm_provider", "llm_model", "ollama_base_url", "vision_model",
+      "llm_provider", "llm_model", "llm_model_medical", "llm_model_legal", "llm_model_coordinator",
+      "ollama_base_url", "vision_model",
       "temperature", "max_tokens"
     ];
     function load() {

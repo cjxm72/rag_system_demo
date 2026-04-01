@@ -1,22 +1,35 @@
 [project]
 name = "rag-system"
-version = "0.2.0"
-description = "企业数据管理秘书 RAG（全在线：硅基流动 + Ollama）"
+version = "0.3.0"
+description = "企业数据管理秘书 RAG（Chroma + SQLite + 硅基流动 + Agno Team）"
 requires-python = ">=3.10"
 dependencies = [
-    "faiss-cpu>=1.12.0",
+    "agno>=2.5.0",
+    "chromadb>=0.5.0",
     "fastapi>=0.116.1",
     "httpx>=0.27.0",
     "langchain>=0.3.27",
     "langchain-openai>=0.2.0",
-    "langgraph>=0.6.7",
     "llama-index>=0.14.0",
     "llama-index-embeddings-openai>=0.2.0",
-    "llama-index-vector-stores-faiss>=0.5.1",
+    "llama-index-vector-stores-chroma>=0.4.0",
     "numpy>=1.24.0",
-    "python-multipart>=0.0.9",
-    "pydantic>=2.11.7",
+    "opendataloader-pdf>=2.0.0",
     "pymupdf>=1.24.0",
+    "pydantic>=2.11.7",
+    "python-docx>=1.1.0",
+    "python-multipart>=0.0.9",
     "pyyaml>=6.0.2",
     "uvicorn>=0.35.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "integration: 需要 SILICONFLOW_API_KEY 与网络",
+    "slow: 较慢（含嵌入/大模型）",
 ]

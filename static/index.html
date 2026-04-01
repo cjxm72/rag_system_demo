@@ -90,7 +90,7 @@
         <section>
           <h2>文档</h2>
           <div class="row">
-            <input type="file" id="fileInput" multiple accept=".pdf,.txt,.md,.jpg,.jpeg,.png,.bmp,.gif,.webp" />
+            <input type="file" id="fileInput" multiple accept=".pdf,.docx,.txt,.md,.jpg,.jpeg,.png,.bmp,.gif,.webp" />
             <button id="uploadBtn">上传</button>
           </div>
           <ul id="docList"></ul>
@@ -387,6 +387,9 @@
           reranker_model: s.reranker_model || "Qwen/Qwen3-Reranker-0.6B",
           llm_provider: s.llm_provider || "siliconflow",
           llm_model: s.llm_model || "Pro/deepseek-ai/DeepSeek-V3.2",
+          llm_model_medical: s.llm_model_medical || null,
+          llm_model_legal: s.llm_model_legal || null,
+          llm_model_coordinator: s.llm_model_coordinator || null,
           ollama_base_url: s.ollama_base_url || "http://localhost:11434/v1",
           vision_model: s.vision_model || "Qwen/Qwen2-VL-7B-Instruct",
           temperature: s.temperature != null ? s.temperature : 0.7,

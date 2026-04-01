@@ -86,8 +86,3 @@
 - 启动：`uv run python -m rag_demo` 或 `uvicorn rag_demo.api.main:app --port 8001`
 
 已移除旧版 `src/` 兼容层；入口统一为包 `rag_demo`。
-
-## 10. 自动化测试
-
-- 说明与命令见 **`docs/TESTING.md`**（`pytest`、marker `integration`、环境变量、样例文件路径）。
-- 集成测试使用 **临时目录** 隔离 SQLite / Chroma / 上传目录，不污染仓库内 `data/`。

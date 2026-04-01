@@ -31,7 +31,9 @@ class SiliconFlowEmbedding(BaseEmbedding):
         api_base = (api_base or "").strip()
         if api_base and not (api_base.startswith("http://") or api_base.startswith("https://")):
             api_base = "https://" + api_base.lstrip("/")
-        self._api_base = (api_base or "https://api.siliconflow.cn/v1").rstrip("/")
+        if not api_base:
+            raise ValueError("缺少 api_base（需由前端 LocalStorage 传入 settings.api_base）")
+        self._api_base = api_base.rstrip("/")
         self._model = model
         self._timeout_s = timeout_s
 
@@ -60,8 +62,6 @@ class SiliconFlowEmbedding(BaseEmbedding):
             ) from e
 
         items = data.get("data") or []
-        # OpenAI 兼容返回：data[i].embedding
-        # 这里要求 encoding_format=float（默认），若返回 base64 可再扩展解码
         out: List[List[float]] = []
         for it in items:
             emb = it.get("embedding")
@@ -70,7 +70,6 @@ class SiliconFlowEmbedding(BaseEmbedding):
             out.append([float(x) for x in emb])
         return out
 
-    # BaseEmbedding required hooks
     def _get_query_embedding(self, query: str) -> List[float]:
         return self._post_embeddings([query])[0]
 
