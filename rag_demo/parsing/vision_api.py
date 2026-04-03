@@ -1,6 +1,6 @@
 """
-用硅基流动视觉模型解析图片内容（用于上传图片中的文字/内容提取）。
-参数均由请求传入，不读 config 中的 model。
+用 OpenAI 兼容多模态 Chat 解析图片（硅基 / OpenAI / Ollama，取决于请求中的 api_base）。
+参数均由请求传入。
 """
 
 from __future__ import annotations

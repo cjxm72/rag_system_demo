@@ -285,13 +285,21 @@
       const s = getSettings();
       try {
         // 逐个上传：避免一次性解析太久导致前端无响应，也更容易看到进度
+        const sp = settingsPayload(s);
         for (const file of files) {
           const fd = new FormData();
-          fd.append("file", file); // 后端支持单个或多个 file 字段，这里逐个发
-          fd.append("api_key", s.api_key || "");
-          fd.append("embedding_model", s.embedding_model || "Qwen/Qwen3-Embedding-0.6B");
-          fd.append("api_base", s.api_base || "https://api.siliconflow.cn/v1");
-          fd.append("vision_model", s.vision_model || "Qwen/Qwen2-VL-7B-Instruct");
+          fd.append("file", file);
+          fd.append("api_key", sp.api_key || "");
+          fd.append("embedding_model", sp.embedding_model || "");
+          fd.append("api_base", sp.api_base || "");
+          fd.append("vision_model", sp.vision_model || "");
+          fd.append("embedding_provider", sp.embedding_provider || "siliconflow");
+          fd.append("vision_provider", sp.vision_provider || "siliconflow");
+          if (sp.embedding_api_base) fd.append("embedding_api_base", sp.embedding_api_base);
+          if (sp.embedding_api_key) fd.append("embedding_api_key", sp.embedding_api_key);
+          if (sp.vision_api_base) fd.append("vision_api_base", sp.vision_api_base);
+          if (sp.vision_api_key) fd.append("vision_api_key", sp.vision_api_key);
+          if (sp.ollama_base_url) fd.append("ollama_base_url", sp.ollama_base_url);
           await api("POST", "/documents/upload", fd);
         }
         document.getElementById("fileInput").value = "";
@@ -325,10 +333,46 @@
       renderChat();
     };
 
-    async function streamAnswer(body, onDelta) {
-      const r = await fetch(base + "/query/stream", {
+    function settingsPayload(s) {
+      const num = (v, d) => (v != null && v !== "" && !Number.isNaN(Number(v)) ? Number(v) : d);
+      return {
+        api_key: s.api_key || "",
+        api_base: s.api_base || "",
+        ollama_base_url: s.ollama_base_url || "",
+        embedding_provider: s.embedding_provider || "siliconflow",
+        embedding_api_base: s.embedding_api_base || null,
+        embedding_api_key: s.embedding_api_key || null,
+        embedding_model: s.embedding_model || "Qwen/Qwen3-Embedding-4B",
+        rerank_provider: s.rerank_provider || "siliconflow",
+        rerank_api_base: s.rerank_api_base || null,
+        rerank_api_key: s.rerank_api_key || null,
+        reranker_model: s.reranker_model || "Qwen/Qwen3-Reranker-0.6B",
+        llm_provider: s.llm_provider || "siliconflow",
+        llm_api_base: s.llm_api_base || null,
+        llm_api_key: s.llm_api_key || null,
+        llm_model: s.llm_model || "Pro/deepseek-ai/DeepSeek-V3.2",
+        llm_model_medical: s.llm_model_medical || null,
+        llm_model_legal: s.llm_model_legal || null,
+        llm_model_coordinator: s.llm_model_coordinator || null,
+        vision_provider: s.vision_provider || "siliconflow",
+        vision_api_base: s.vision_api_base || null,
+        vision_api_key: s.vision_api_key || null,
+        vision_model: s.vision_model || "Qwen/Qwen2-VL-7B-Instruct",
+        temperature: num(s.temperature, 0.7),
+        max_tokens: num(s.max_tokens, 2000),
+      };
+    }
+
+    function needsDefaultKeyForProvider(p) {
+      const x = (p || "siliconflow").toLowerCase();
+      return x === "siliconflow" || x === "openai";
+    }
+
+    /** POST /query：SSE（text/event-stream），按行解析 data: JSON */
+    async function streamAnswerSse(body, onDelta) {
+      const r = await fetch(base + "/query", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
         body: JSON.stringify(body),
       });
       if (!r.ok) {
@@ -337,11 +381,25 @@
       }
       const reader = r.body.getReader();
       const decoder = new TextDecoder("utf-8");
+      let buf = "";
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        if (chunk) onDelta(chunk);
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          for (const line of block.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw) continue;
+            let ev;
+            try { ev = JSON.parse(raw); } catch (_) { continue; }
+            if (ev.type === "chunk" && ev.text) onDelta(ev.text);
+            if (ev.type === "error" && ev.message) throw new Error(ev.message);
+          }
+        }
       }
     }
 
@@ -349,8 +407,11 @@
       const q = document.getElementById("question").value.trim();
       if (!q) { alert("请输入问题"); return; }
       const s = getSettings();
-      if (!s.api_key && (s.llm_provider || "siliconflow") === "siliconflow") {
-        alert("请先在设置中填写硅基流动 API Key");
+      const sp = settingsPayload(s);
+      const needEmb = needsDefaultKeyForProvider(sp.embedding_provider) && !(sp.embedding_api_key || sp.api_key || "").trim();
+      const needLlm = needsDefaultKeyForProvider(sp.llm_provider) && !(sp.llm_api_key || sp.api_key || "").trim();
+      if (needEmb || needLlm) {
+        alert("请在设置中填写默认 API Key，或为 Embedding / 回答模型填写专用 Key（硅基与 OpenAI 需要密钥）");
         return;
       }
       document.getElementById("error").style.display = "none";
@@ -380,25 +441,11 @@
         groups,
         thread_id: currentThreadId,
         history,
-        settings: {
-          api_key: s.api_key,
-          api_base: s.api_base || "https://api.siliconflow.cn/v1",
-          embedding_model: s.embedding_model || "Qwen/Qwen3-Embedding-0.6B",
-          reranker_model: s.reranker_model || "Qwen/Qwen3-Reranker-0.6B",
-          llm_provider: s.llm_provider || "siliconflow",
-          llm_model: s.llm_model || "Pro/deepseek-ai/DeepSeek-V3.2",
-          llm_model_medical: s.llm_model_medical || null,
-          llm_model_legal: s.llm_model_legal || null,
-          llm_model_coordinator: s.llm_model_coordinator || null,
-          ollama_base_url: s.ollama_base_url || "http://localhost:11434/v1",
-          vision_model: s.vision_model || "Qwen/Qwen2-VL-7B-Instruct",
-          temperature: s.temperature != null ? s.temperature : 0.7,
-          max_tokens: s.max_tokens != null ? s.max_tokens : 2000,
-        },
+        settings: settingsPayload(s),
       };
       if (imageDataUrl) body.image_base64 = imageDataUrl;
       try {
-        await streamAnswer(body, (delta) => {
+        await streamAnswerSse(body, (delta) => {
           messages[assistantIndex].content += delta;
           saveChat();
           renderChat();

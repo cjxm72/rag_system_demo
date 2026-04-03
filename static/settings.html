@@ -6,10 +6,11 @@
   <title>设置 · 企业数据管理秘书</title>
   <style>
     * { box-sizing: border-box; }
-    body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; background: #f5f6f8; }
+    body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; background: #f5f6f8; }
     h1 { font-size: 1.25rem; margin-bottom: 8px; }
-    .hint { color: #666; font-size: 0.9rem; margin-bottom: 20px; }
-    label { display: block; margin: 12px 0 4px; font-weight: 500; }
+    h2 { font-size: 1rem; margin: 24px 0 8px; color: #334155; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }
+    .hint { color: #666; font-size: 0.9rem; margin-bottom: 16px; }
+    label { display: block; margin: 10px 0 4px; font-weight: 500; font-size: 0.9rem; }
     input, select { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 1rem; }
     input[type="password"] { font-family: monospace; }
     button { padding: 10px 20px; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; background: #2563eb; color: #fff; margin-top: 16px; }
@@ -17,51 +18,87 @@
     .row { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
     a { color: #2563eb; }
     .ok { color: #059669; margin-top: 12px; }
+    .subhint { font-size: 0.8rem; color: #94a3b8; margin-top: 2px; }
   </style>
 </head>
 <body>
   <h1>设置</h1>
-  <p class="hint">配置保存在浏览器 LocalStorage，仅本机使用。仅支持硅基流动 + Ollama（本地可改 URL）。</p>
+  <p class="hint">配置保存在浏览器 LocalStorage。Embedding / Rerank / 回答模型 / 视觉 均可独立选择 <strong>硅基流动</strong>、<strong>OpenAI</strong> 或 <strong>Ollama</strong>（OpenAI 兼容接口）。留空的专用 Base/Key 将回退到下方「默认 API Key / 默认 Base（硅基）」。</p>
 
-  <label>硅基流动 API Key</label>
+  <h2>默认（硅基时常用）</h2>
+  <label>默认 API Key（硅基 / OpenAI 等，可被下方专用 Key 覆盖）</label>
   <input type="password" id="api_key" placeholder="sk-xxx" autocomplete="off" />
-
-  <label>API Base（硅基）</label>
+  <label>默认 API Base（硅基时常填；选 OpenAI 各能力时可不填，将用官方默认）</label>
   <input type="text" id="api_base" placeholder="https://api.siliconflow.cn/v1" />
+  <label>Ollama Base URL（各能力选 Ollama 且未填专用 Base 时使用）</label>
+  <input type="text" id="ollama_base_url" placeholder="http://127.0.0.1:11434/v1" />
 
-  <label>Embedding 模型（硅基）</label>
-  <input type="text" id="embedding_model" placeholder="Qwen/Qwen3-Embedding-0.6B" />
+  <h2>Embedding</h2>
+  <label>提供商</label>
+  <select id="embedding_provider">
+    <option value="siliconflow">硅基流动</option>
+    <option value="openai">OpenAI</option>
+    <option value="ollama">Ollama</option>
+  </select>
+  <label>专用 API Base（可选）</label>
+  <input type="text" id="embedding_api_base" placeholder="留空则用默认 Base / 官方默认" />
+  <label>专用 API Key（可选）</label>
+  <input type="password" id="embedding_api_key" placeholder="留空则用默认 API Key" autocomplete="off" />
+  <label>模型名</label>
+  <input type="text" id="embedding_model" placeholder="如 Qwen/Qwen3-Embedding-4B 或 text-embedding-3-small" />
 
-  <label>Reranker 模型（硅基）</label>
-  <input type="text" id="reranker_model" placeholder="Qwen/Qwen3-Reranker-0.6B" />
+  <h2>Reranker</h2>
+  <p class="subhint">OpenAI / Ollama 无标准 /rerank 接口时将按向量分数截断，不调用远程 Rerank。</p>
+  <label>提供商</label>
+  <select id="rerank_provider">
+    <option value="siliconflow">硅基流动</option>
+    <option value="openai">OpenAI（仅向量序）</option>
+    <option value="ollama">Ollama（仅向量序）</option>
+  </select>
+  <label>专用 API Base（可选）</label>
+  <input type="text" id="rerank_api_base" placeholder="仅硅基 Rerank 需要" />
+  <label>专用 API Key（可选）</label>
+  <input type="password" id="rerank_api_key" placeholder="留空则用默认 API Key" autocomplete="off" />
+  <label>模型名（硅基 Rerank 时必填）</label>
+  <input type="text" id="reranker_model" placeholder="如 Qwen/Qwen3-Reranker-0.6B" />
 
-  <label>回答用 LLM 提供商</label>
+  <h2>回答（LLM + 协调路由）</h2>
+  <label>提供商</label>
   <select id="llm_provider">
     <option value="siliconflow">硅基流动</option>
-    <option value="ollama">Ollama（本地/自建）</option>
+    <option value="openai">OpenAI</option>
+    <option value="ollama">Ollama</option>
   </select>
-
-  <label>回答用 LLM 模型名（默认）</label>
-  <input type="text" id="llm_model" placeholder="Pro/deepseek-ai/DeepSeek-V3.2" />
-
-  <label>医疗 Agent 模型（可选，不填则用默认）</label>
-  <input type="text" id="llm_model_medical" placeholder="与默认相同可留空" />
-
+  <label>专用 API Base（可选）</label>
+  <input type="text" id="llm_api_base" placeholder="留空则用默认 Base / 官方默认" />
+  <label>专用 API Key（可选）</label>
+  <input type="password" id="llm_api_key" placeholder="留空则用默认 API Key" autocomplete="off" />
+  <label>默认回答模型</label>
+  <input type="text" id="llm_model" placeholder="Pro/deepseek-ai/DeepSeek-V3.2 或 gpt-4o-mini" />
+  <label>医疗 Agent 模型（可选）</label>
+  <input type="text" id="llm_model_medical" placeholder="不填则与默认相同" />
   <label>法律 Agent 模型（可选）</label>
-  <input type="text" id="llm_model_legal" placeholder="与默认相同可留空" />
+  <input type="text" id="llm_model_legal" placeholder="不填则与默认相同" />
+  <label>协调者模型（可选）</label>
+  <input type="text" id="llm_model_coordinator" placeholder="不填则与默认相同" />
 
-  <label>协调者 Team 模型（可选，负责路由与调用成员）</label>
-  <input type="text" id="llm_model_coordinator" placeholder="与默认相同可留空" />
+  <h2>视觉 / 图片解析</h2>
+  <label>提供商</label>
+  <select id="vision_provider">
+    <option value="siliconflow">硅基流动</option>
+    <option value="openai">OpenAI</option>
+    <option value="ollama">Ollama</option>
+  </select>
+  <label>专用 API Base（可选）</label>
+  <input type="text" id="vision_api_base" placeholder="留空则用默认 Base / 官方默认" />
+  <label>专用 API Key（可选）</label>
+  <input type="password" id="vision_api_key" placeholder="留空则用默认 API Key" autocomplete="off" />
+  <label>视觉模型</label>
+  <input type="text" id="vision_model" placeholder="Qwen/Qwen2-VL-7B-Instruct 或兼容多模态 id" />
 
-  <label>Ollama Base URL（仅当提供商选 Ollama 时有效）</label>
-  <input type="text" id="ollama_base_url" placeholder="http://localhost:11434/v1" />
-
-  <label>视觉/OCR 模型（解析图片与 PDF 内图片）</label>
-  <input type="text" id="vision_model" placeholder="Qwen/Qwen2-VL-7B-Instruct" />
-
+  <h2>生成参数</h2>
   <label>Temperature</label>
   <input type="number" id="temperature" min="0" max="1" step="0.1" value="0.7" />
-
   <label>Max Tokens</label>
   <input type="number" id="max_tokens" min="100" value="2000" />
 
@@ -74,9 +111,11 @@
   <script>
     const KEY = "rag_settings";
     const fields = [
-      "api_key", "api_base", "embedding_model", "reranker_model",
-      "llm_provider", "llm_model", "llm_model_medical", "llm_model_legal", "llm_model_coordinator",
-      "ollama_base_url", "vision_model",
+      "api_key", "api_base", "ollama_base_url",
+      "embedding_provider", "embedding_api_base", "embedding_api_key", "embedding_model",
+      "rerank_provider", "rerank_api_base", "rerank_api_key", "reranker_model",
+      "llm_provider", "llm_api_base", "llm_api_key", "llm_model", "llm_model_medical", "llm_model_legal", "llm_model_coordinator",
+      "vision_provider", "vision_api_base", "vision_api_key", "vision_model",
       "temperature", "max_tokens"
     ];
     function load() {
@@ -84,7 +123,7 @@
         const s = JSON.parse(localStorage.getItem(KEY) || "{}");
         fields.forEach(f => {
           const el = document.getElementById(f);
-          if (el && s[f] !== undefined) el.value = s[f];
+          if (el && s[f] !== undefined && s[f] !== null) el.value = s[f];
         });
       } catch (_) {}
     }
@@ -92,7 +131,14 @@
       const s = {};
       fields.forEach(f => {
         const el = document.getElementById(f);
-        if (el) s[f] = el.type === "number" ? parseFloat(el.value) : el.value;
+        if (!el) return;
+        if (el.type === "number") {
+          const n = parseFloat(el.value);
+          s[f] = Number.isFinite(n) ? n : el.value;
+        } else {
+          const v = el.value;
+          s[f] = v === "" ? "" : v;
+        }
       });
       localStorage.setItem(KEY, JSON.stringify(s));
       document.getElementById("msg").textContent = "已保存到 LocalStorage";

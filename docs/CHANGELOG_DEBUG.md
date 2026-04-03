@@ -2,11 +2,17 @@
 
 本文件用于记录本项目在重构过程中的关键改动、出现的错误以及对应修复，便于毕设写作与答辩说明。
 
+## 2026-04 — v0.4 生产向存储
+
+- **向量库**：**Milvus**（独立服务，默认 collection `rag_kb`）；移除 Chroma。
+- **业务与记忆**：**PostgreSQL** + **SQLModel**（`DATABASE_URL`）；表语义与旧版一致；若存在旧 `data/store.json` 且库为空则仍可从 JSON 迁移一次。
+- **本地依赖**：PostgreSQL、Milvus 均为本机安装；配置见 `.env.example`（曾提供 docker-compose 示例，已移除）。
+
 ## 2026-04 — v0.3 架构升级
 
 - **移除** 旧 `src/` 兼容入口；统一使用包 `rag_demo`（`python -m rag_demo` 或 `uvicorn rag_demo.api.main:app`）。
-- **向量库**：FAISS → **Chroma**（`data/chroma/` 持久化）。
-- **业务与记忆**：`store.json` → **SQLite** `data/app.db`（文档、知识组、多轮对话）；若存在旧 `data/store.json` 且库为空则自动迁移。
+- **向量库**：FAISS → **Chroma**（`data/chroma/` 持久化）。（v0.4 起已改为 Milvus，本条保留作历史记录。）
+- **业务与记忆**：`store.json` → **SQLite** `data/app.db`（文档、知识组、多轮对话）；若存在旧 `data/store.json` 且库为空则自动迁移。（v0.4 起已改为 PostgreSQL，本条保留作历史记录。）
 - **PDF**：优先 **OpenDataLoader PDF v2+**（需 Java 11+），失败回退 PyMuPDF。
 - **Office**：新增 `.docx` 解析。
 - **引用**：检索保留 `doc_id`，上下文带 `[来源i]`；文末用 SQLite 反查文档名追加 `【引用文档】`；`POST /query` 返回 `sources`。

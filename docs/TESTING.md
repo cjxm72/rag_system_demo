@@ -3,12 +3,15 @@
 ## 依赖
 
 - 开发依赖含 `pytest`：`uv sync --group dev`
-- **集成测试**需要网络与 **硅基流动 API Key**（嵌入、rerank、LLM）。
+- **集成测试**需要：本机 **PostgreSQL**、本机 **Milvus**、网络与 **API Key**（嵌入、rerank、LLM）。请自行安装并启动服务，环境变量见 `tests/test.env.example` 与项目根 `.env.example`。
+- 在终端查看 **SSE 聚合后的回答摘要**：`RAG_TEST_PRINT_ANSWERS=1 uv run pytest tests/ -v -s`（`-s` 关闭输出捕获）。
 
 ## 环境变量
 
 | 变量 | 说明 |
 |------|------|
+| `DATABASE_URL` | PostgreSQL 连接串，如 `postgresql+psycopg://user:pass@127.0.0.1:5432/dbname`。未设置时，依赖 `client` / `isolated_env` 的用例会跳过；仅需 PG 的用例可使用 `bare_client`。 |
+| `MILVUS_URI` 或 `MILVUS_HOST` + `MILVUS_PORT` | Milvus 连接。未设置时，完整 RAG 集成用例会跳过。可选 `MILVUS_COLLECTION` 覆盖默认 collection 名。 |
 | `SILICONFLOW_API_KEY` / `RAG_DEMO_API_KEY` / `OPENAI_API_KEY` | 集成测试必需；未设置（或值为 `xx`）时跳过集成用例。 |
 | `RAG_TEST_API_BASE` 或 `OPENAI_BASE_URL` | 可选，默认 `https://api.siliconflow.cn/v1`。 |
 | `RAG_TEST_LLM` 或 `OPENAI_MODEL` | 可选，覆盖默认 LLM 模型 id。 |
@@ -22,7 +25,7 @@
 cd /path/to/rag_system_demo
 uv sync --group dev
 
-# 仅本地、不连外网（当前为健康检查等）
+# 仅本地、不连外网（需配置 DATABASE_URL；健康检查等）
 uv run pytest tests/ -m "not integration" -v
 
 # 完整集成（需 Key）
@@ -44,7 +47,7 @@ uv run pytest tests/ -m integration -v --tb=short
 
 | 文件 | 内容 |
 |------|------|
-| `tests/test_e2e_rag.py` | 隔离库与 Chroma 下的端到端：上传 TXT/PDF、建知识组、`/query` 与 `/query/stream`、医疗/法律/综合路由、`【引用文档】` 与 `sources`、三模型字段（医疗/法律/协调者）。 |
+| `tests/test_e2e_rag.py` | 隔离 PostgreSQL 与 Milvus 下的端到端：上传 TXT/PDF、建知识组、`POST /query`（SSE）、医疗/法律/综合路由、`【引用文档】` 与 `sources`、三模型字段（医疗/法律/协调者）。 |
 | `tests/test_rag_evaluate.py` | `POST /evaluate`：条目结构、`semantic_similarity` 与聚合指标。 |
 
 ## Marker

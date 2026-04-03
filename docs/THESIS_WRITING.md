@@ -15,7 +15,7 @@
 系统由前端静态页面与后端 FastAPI 服务组成：
 
 - **前端**：负责对话交互、文档上传、知识组选择、配置管理（API Key/模型等保存在 LocalStorage，每次请求随 `settings` 发送）。
-- **后端**：负责文档解析（PDF 优先 OpenDataLoader v2+，回退 PyMuPDF；DOCX 用 `python-docx`）、Chroma 索引构建、检索加权与重排、模型推理（流式输出）、SQLite 引用反查、评估接口。
+- **后端**：负责文档解析（PDF 优先 OpenDataLoader v2+，回退 PyMuPDF；DOCX 用 `python-docx`）、Milvus 向量索引构建、检索加权与重排、模型推理（流式输出）、PostgreSQL 引用反查、评估接口。
 
 为满足“全在线”与可答辩性：
 
@@ -24,13 +24,13 @@
 
 ---
 
-## 3. 知识组织：Chroma 单库 + SQLite 业务表 + 知识组映射（可作数据结构设计）
+## 3. 知识组织：Milvus 向量库 + PostgreSQL 业务表 + 知识组映射（可作数据结构设计）
 
-本项目采用“**持久化 Chroma 向量库 + SQLite 业务表**”：
+本项目采用“**Milvus 向量库 + PostgreSQL 业务表（SQLModel）**”：
 
-- **向量索引（Chroma）**：文档切 chunk 后写入同一 collection；chunk metadata 含 `doc_id`（及切分序号等），便于检索后反查业务表。
-- **SQLite**：存储文档全文与文件名、知识组与多对多映射、对话记忆；引用阶段用 `doc_id` 主键反查文档名，避免仅依赖模型“记住”文件名。
-- **知识组（Groups）**：仅存于 SQLite，不向向量库写入 `group_id`；查询时先召回再按组过滤与加权。
+- **向量索引（Milvus）**：文档切 chunk 后写入同一 collection；字段含 `doc_id`（及切分序号等），便于检索后反查业务表。
+- **PostgreSQL**：存储文档全文与文件名、知识组与多对多映射、对话记忆；引用阶段用 `doc_id` 主键反查文档名，避免仅依赖模型“记住”文件名。
+- **知识组（Groups）**：仅存于 PostgreSQL，不向向量库写入 `group_id`；查询时先召回再按组过滤与加权。
 
 这样可以在不增加向量库复杂度的前提下实现：
 
@@ -44,13 +44,13 @@
 
 一次查询的检索流程如下：
 
-1. **向量召回**：对问题做向量化，在全局索引中召回 topK 候选 chunk；
+1. **向量召回**：对问题做向量化，在 Milvus 全局索引中召回 topK 候选 chunk；
 2. **按知识组过滤**：若用户选择了知识组，则仅保留 `doc_id` 属于所选组的候选；
 3. **组权重加权**：对每个候选 chunk 的分数进行加权，体现主/次组优先级；
 4. **在线 Reranker 精排**：将候选 chunk 交给在线 rerank 模型重排，取 topN 作为最终上下文；
-5. **生成**：将上下文与问题送入 LLM；文末由系统根据本轮 `doc_id` 集合自 SQLite 追加「引用文档」列表，与纯提示词约束形成互补。
+5. **生成**：将上下文与问题送入 LLM；文末由系统根据本轮 `doc_id` 集合自 PostgreSQL 追加「引用文档」列表，与纯提示词约束形成互补。
 
-**引用与可解释性（防幻觉）**：检索片段在 prompt 中带 `[来源i]` 与 `doc_id`；回答结束后用 `doc_id` 回查 SQLite 得文档名；流式/非流式均在文本末输出引用块，且 JSON 可返回 `sources`。
+**引用与可解释性（防幻觉）**：检索片段在 prompt 中带 `[来源i]` 与 `doc_id`；回答结束后用 `doc_id` 回查 PostgreSQL 得文档名；流式/非流式均在文本末输出引用块，且 JSON 可返回 `sources`。
 
 ---
 

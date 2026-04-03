@@ -1,6 +1,5 @@
 """
-硅基流动 Embedding（OpenAI 兼容 /embeddings）。
-目的：避免 LlamaIndex OpenAIEmbedding 的模型枚举校验，从而支持任意硅基模型名（如 Qwen/Qwen3-Embedding-0.6B）。
+OpenAI 兼容 Embedding（POST /v1/embeddings）：适用于硅基流动、OpenAI、Ollama 等。
 """
 
 from __future__ import annotations
@@ -56,8 +55,7 @@ class SiliconFlowEmbedding(BaseEmbedding):
                 data = r.json()
         except httpx.ConnectError as e:
             raise RuntimeError(
-                "连接硅基流动失败（可能是 DNS/网络问题）。请检查能否解析 api.siliconflow.cn，"
-                "以及是否需要配置 HTTP(S)_PROXY。原始错误: "
+                "连接 Embedding 服务失败（DNS/网络或 Base URL）。请检查 api_base 与代理设置。原始错误: "
                 + str(e)
             ) from e
 
@@ -92,8 +90,7 @@ class SiliconFlowEmbedding(BaseEmbedding):
                 data = r.json()
         except httpx.ConnectError as e:
             raise RuntimeError(
-                "连接硅基流动失败（可能是 DNS/网络问题）。请检查能否解析 api.siliconflow.cn，"
-                "以及是否需要配置 HTTP(S)_PROXY。原始错误: "
+                "连接 Embedding 服务失败（DNS/网络或 Base URL）。请检查 api_base 与代理设置。原始错误: "
                 + str(e)
             ) from e
 

@@ -21,18 +21,25 @@ def _normalize_provider(settings: Dict[str, Any]) -> str:
     p = (settings.get("llm_provider") or "").lower().strip()
     if not p:
         raise ValueError("settings 缺少 llm_provider（需由前端 LocalStorage 传入）")
+    if p not in ("siliconflow", "openai", "ollama"):
+        raise ValueError(f"不支持的 llm_provider: {p}")
     return p
 
 
-def _normalize_siliconflow_base(settings: Dict[str, Any]) -> str:
-    b = (settings.get("api_base") or "").rstrip("/")
-    if not b:
-        raise ValueError("settings 缺少 api_base（需由前端 LocalStorage 传入）")
-    return b
+def _llm_http_credentials(settings: Dict[str, Any]) -> Tuple[str, str]:
+    """返回 (base_url, api_key)，对应 OpenAI 兼容 Chat Completions。"""
+    from rag_demo.core.provider_settings import finalize_settings
 
-
-def _normalize_ollama_base(settings: Dict[str, Any]) -> str:
-    return (settings.get("ollama_base_url") or "http://localhost:11434/v1").rstrip("/")
+    finalize_settings(settings)
+    base = (settings.get("llm_api_base") or "").rstrip("/")
+    key = (settings.get("llm_api_key") or "").strip()
+    if not base:
+        raise ValueError("settings 缺少 llm_api_base（请先解析提供商或填写专用 Base）")
+    if (settings.get("llm_provider") or "").lower() == "ollama":
+        return base, key or "ollama"
+    if not key:
+        raise ValueError("settings 缺少 llm_api_key（硅基 / OpenAI 必填）")
+    return base, key
 
 
 @singleton
@@ -102,15 +109,8 @@ def _llm_route(question: str, settings: Dict[str, Any]) -> Tuple[TeamRouteDecisi
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_openai import ChatOpenAI
 
-    provider = _normalize_provider(settings)
-    if provider == "ollama":
-        base_url = _normalize_ollama_base(settings)
-        api_key = "ollama"
-    else:
-        base_url = _normalize_siliconflow_base(settings)
-        api_key = (settings.get("api_key") or "").strip()
-        if not api_key:
-            raise ValueError("settings 缺少 api_key（协调者路由需要）")
+    _normalize_provider(settings)
+    base_url, api_key = _llm_http_credentials(settings)
 
     model = (settings.get("llm_model_coordinator") or settings.get("llm_model") or "").strip()
     if not model:
@@ -246,15 +246,7 @@ def run_team_answer(
     - stream=True: answer 为空字符串，stream_iter 逐步产出文本
     """
     provider = _normalize_provider(settings)
-
-    if provider == "ollama":
-        base_url = _normalize_ollama_base(settings)
-        api_key = "ollama"
-    else:
-        base_url = _normalize_siliconflow_base(settings)
-        api_key = (settings.get("api_key") or "").strip()
-        if not api_key:
-            raise ValueError("请在前端设置中填写硅基流动 API 密钥。")
+    base_url, api_key = _llm_http_credentials(settings)
 
     temperature = float(settings.get("temperature", 0.7))
     max_tokens = int(settings.get("max_tokens", 2000))

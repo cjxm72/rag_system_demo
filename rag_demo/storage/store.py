@@ -1,5 +1,5 @@
 """
-文档与知识组：SQLite 持久化（见 `rag_demo.storage.db`）。
+文档与知识组：PostgreSQL 持久化（SQLModel，见 `rag_demo.storage.db`）。
 """
 
 from rag_demo.storage.db import (  # noqa: F401

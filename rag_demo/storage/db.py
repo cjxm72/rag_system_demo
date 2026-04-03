@@ -1,89 +1,63 @@
 """
-SQLite 持久化：文档、知识组、对话记忆。
-路径：data/app.db（与项目根相对）。
+PostgreSQL 持久化（SQLModel）：文档、知识组、对话记忆。
+通过环境变量 DATABASE_URL 连接，例如：
+  postgresql+psycopg://user:pass@localhost:5432/ragdb
 """
 
 from __future__ import annotations
 
 import json
 import os
-import sqlite3
-import threading
+import time
 import uuid
-from contextlib import contextmanager
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-_lock = threading.Lock()
+from sqlalchemy import delete, select
+from sqlmodel import Session
+
+from rag_demo.storage.database import create_db_and_tables, session_scope
+from rag_demo.storage.models import AppMeta, ChatMessage, Document, Group, GroupMember
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(os.path.dirname(_current_dir))
-DB_PATH = os.path.join(_project_root, "data", "app.db")
 _LEGACY_JSON = os.path.join(_project_root, "data", "store.json")
 
-
-def _connect() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+_initialized = False
 
 
-@contextmanager
-def get_conn():
-    with _lock:
-        conn = _connect()
-        try:
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
+def _pg_safe_str(value: Any) -> str:
+    """PostgreSQL text/varchar 不允许 NUL，迁移或解析二进制误入库时需剔除。"""
+    if value is None:
+        return ""
+    s = str(value)
+    return s.replace("\x00", "") if "\x00" in s else s
 
 
-def init_schema() -> None:
-    with get_conn() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS documents (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL DEFAULT '',
-                path TEXT,
-                text TEXT,
-                status TEXT DEFAULT 'queued',
-                progress INTEGER DEFAULT 0,
-                error TEXT DEFAULT '',
-                created_at TEXT DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS groups (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS group_members (
-                group_id TEXT NOT NULL,
-                doc_id TEXT NOT NULL,
-                PRIMARY KEY (group_id, doc_id)
-            );
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                thread_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at INTEGER DEFAULT (strftime('%s','now'))
-            );
-            CREATE INDEX IF NOT EXISTS idx_chat_thread ON chat_messages(thread_id, id);
-            CREATE TABLE IF NOT EXISTS app_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            );
-            """
-        )
+def init_db() -> None:
+    global _initialized
+    if _initialized:
+        return
+    create_db_and_tables()
+    _migrate_from_json_if_needed()
+    _initialized = True
+
+
+def truncate_all_tables() -> None:
+    """测试/运维：清空业务表（保留表结构）。按外键依赖顺序删除。"""
+    init_db()
+    with session_scope() as s:
+        s.exec(delete(GroupMember))
+        s.exec(delete(Group))
+        s.exec(delete(Document))
+        s.exec(delete(ChatMessage))
+        s.exec(delete(AppMeta))
 
 
 def _migrate_from_json_if_needed() -> None:
     if not os.path.isfile(_LEGACY_JSON):
         return
-    with get_conn() as conn:
-        n = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-        if n > 0:
+    with session_scope() as s:
+        if s.scalars(select(Document).limit(1)).first():
             return
     try:
         with open(_LEGACY_JSON, "r", encoding="utf-8") as f:
@@ -93,44 +67,31 @@ def _migrate_from_json_if_needed() -> None:
     docs = raw.get("documents") or []
     groups = raw.get("groups") or []
     emb = raw.get("embedding_model") or ""
-    with get_conn() as conn:
+    with session_scope() as s:
         for d in docs:
-            conn.execute(
-                """INSERT OR REPLACE INTO documents
-                (id, name, path, text, status, progress, error) VALUES (?,?,?,?,?,?,?)""",
-                (
-                    d.get("id"),
-                    d.get("name") or "",
-                    d.get("path") or "",
-                    d.get("text") or "",
-                    d.get("status") or "done",
-                    int(d.get("progress") or 0),
-                    d.get("error") or "",
-                ),
+            did = d.get("id")
+            if not did:
+                continue
+            s.add(
+                Document(
+                    id=did,
+                    name=_pg_safe_str(d.get("name")),
+                    path=_pg_safe_str(d.get("path")),
+                    text=_pg_safe_str(d.get("text")),
+                    status=_pg_safe_str(d.get("status")) or "done",
+                    progress=int(d.get("progress") or 0),
+                    error=_pg_safe_str(d.get("error")),
+                )
             )
         for g in groups:
             gid = g.get("id")
             if not gid:
                 continue
-            conn.execute(
-                "INSERT OR REPLACE INTO groups (id, name) VALUES (?,?)",
-                (gid, g.get("name") or ""),
-            )
+            s.add(Group(id=gid, name=_pg_safe_str(g.get("name"))))
             for did in g.get("doc_ids") or []:
-                conn.execute(
-                    "INSERT OR IGNORE INTO group_members (group_id, doc_id) VALUES (?,?)",
-                    (gid, did),
-                )
+                s.add(GroupMember(group_id=gid, doc_id=did))
         if emb:
-            conn.execute(
-                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
-                ("embedding_model", emb),
-            )
-
-
-def init_db() -> None:
-    init_schema()
-    _migrate_from_json_if_needed()
+            s.merge(AppMeta(key="embedding_model", value=_pg_safe_str(emb)))
 
 
 # --- documents ---
@@ -138,21 +99,37 @@ def init_db() -> None:
 
 def list_documents() -> List[Dict[str, Any]]:
     init_db()
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT id, name, path, text, status, progress, error FROM documents ORDER BY created_at"
-        ).fetchall()
-    return [dict(r) for r in rows]
+    with session_scope() as s:
+        rows = s.scalars(select(Document).order_by(Document.created_at, Document.id)).all()
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "path": r.path,
+            "text": r.text,
+            "status": r.status,
+            "progress": r.progress,
+            "error": r.error,
+        }
+        for r in rows
+    ]
 
 
 def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
     init_db()
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT id, name, path, text, status, progress, error FROM documents WHERE id=?",
-            (doc_id,),
-        ).fetchone()
-    return dict(row) if row else None
+    with session_scope() as s:
+        r = s.get(Document, doc_id)
+    if not r:
+        return None
+    return {
+        "id": r.id,
+        "name": r.name,
+        "path": r.path,
+        "text": r.text,
+        "status": r.status,
+        "progress": r.progress,
+        "error": r.error,
+    }
 
 
 def get_documents_by_ids(doc_ids: List[str]) -> Dict[str, Dict[str, Any]]:
@@ -160,23 +137,36 @@ def get_documents_by_ids(doc_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         return {}
     init_db()
     uniq = list(dict.fromkeys(doc_ids))
-    placeholders = ",".join("?" * len(uniq))
-    with get_conn() as conn:
-        rows = conn.execute(
-            f"SELECT id, name, path, text, status, progress, error FROM documents WHERE id IN ({placeholders})",
-            uniq,
-        ).fetchall()
-    return {r["id"]: dict(r) for r in rows}
+    with session_scope() as s:
+        rows = s.scalars(select(Document).where(Document.id.in_(uniq))).all()
+    return {
+        r.id: {
+            "id": r.id,
+            "name": r.name,
+            "path": r.path,
+            "text": r.text,
+            "status": r.status,
+            "progress": r.progress,
+            "error": r.error,
+        }
+        for r in rows
+    }
 
 
 def add_document(name: str, path_or_note: str, text: str) -> str:
     init_db()
     doc_id = str(uuid.uuid4())
-    with get_conn() as conn:
-        conn.execute(
-            """INSERT INTO documents (id, name, path, text, status, progress, error)
-            VALUES (?,?,?,?,?,?,?)""",
-            (doc_id, name, path_or_note, text, "done", 100, ""),
+    with session_scope() as s:
+        s.add(
+            Document(
+                id=doc_id,
+                name=_pg_safe_str(name),
+                path=_pg_safe_str(path_or_note),
+                text=_pg_safe_str(text),
+                status="done",
+                progress=100,
+                error="",
+            )
         )
     return doc_id
 
@@ -184,11 +174,17 @@ def add_document(name: str, path_or_note: str, text: str) -> str:
 def add_document_placeholder(name: str, path_or_note: str) -> str:
     init_db()
     doc_id = str(uuid.uuid4())
-    with get_conn() as conn:
-        conn.execute(
-            """INSERT INTO documents (id, name, path, text, status, progress, error)
-            VALUES (?,?,?,?,?,?,?)""",
-            (doc_id, name, path_or_note, "", "queued", 0, ""),
+    with session_scope() as s:
+        s.add(
+            Document(
+                id=doc_id,
+                name=_pg_safe_str(name),
+                path=_pg_safe_str(path_or_note),
+                text="",
+                status="queued",
+                progress=0,
+                error="",
+            )
         )
     return doc_id
 
@@ -197,23 +193,28 @@ def update_document(doc_id: str, **fields: Any) -> bool:
     if not fields:
         return False
     init_db()
-    cols = []
-    vals: List[Any] = []
-    for k, v in fields.items():
-        cols.append(f"{k} = ?")
-        vals.append(v)
-    vals.append(doc_id)
-    with get_conn() as conn:
-        cur = conn.execute(f"UPDATE documents SET {', '.join(cols)} WHERE id = ?", vals)
-        return cur.rowcount > 0
+    with session_scope() as s:
+        r = s.get(Document, doc_id)
+        if not r:
+            return False
+        for k, v in fields.items():
+            if hasattr(r, k):
+                if k in ("name", "path", "text", "error", "status") and isinstance(v, str):
+                    v = _pg_safe_str(v)
+                setattr(r, k, v)
+        s.add(r)
+    return True
 
 
 def delete_document(doc_id: str) -> bool:
     init_db()
-    with get_conn() as conn:
-        conn.execute("DELETE FROM group_members WHERE doc_id=?", (doc_id,))
-        cur = conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
-        return cur.rowcount > 0
+    with session_scope() as s:
+        s.exec(delete(GroupMember).where(GroupMember.doc_id == doc_id))
+        r = s.get(Document, doc_id)
+        if not r:
+            return False
+        s.delete(r)
+    return True
 
 
 # --- groups ---
@@ -221,51 +222,44 @@ def delete_document(doc_id: str) -> bool:
 
 def list_groups() -> List[Dict[str, Any]]:
     init_db()
-    with get_conn() as conn:
-        rows = conn.execute("SELECT id, name FROM groups ORDER BY name").fetchall()
+    with session_scope() as s:
+        rows = s.scalars(select(Group).order_by(Group.name)).all()
         if not rows:
             return []
-        gids = [r["id"] for r in rows]
-        ph = ",".join("?" * len(gids))
-        members = conn.execute(
-            f"SELECT group_id, doc_id FROM group_members WHERE group_id IN ({ph}) ORDER BY group_id, doc_id",
-            gids,
-        ).fetchall()
+        gids = [r.id for r in rows]
+        members = s.scalars(
+            select(GroupMember).where(GroupMember.group_id.in_(gids)).order_by(GroupMember.group_id, GroupMember.doc_id)
+        ).all()
     by_gid: Dict[str, List[str]] = {}
     for m in members:
-        by_gid.setdefault(m["group_id"], []).append(m["doc_id"])
-    return [{"id": r["id"], "name": r["name"], "doc_ids": by_gid.get(r["id"], [])} for r in rows]
+        by_gid.setdefault(m.group_id, []).append(m.doc_id)
+    return [{"id": r.id, "name": r.name, "doc_ids": by_gid.get(r.id, [])} for r in rows]
 
 
 def add_group(name: str, doc_ids: Optional[List[str]] = None) -> str:
     init_db()
     gid = str(uuid.uuid4())
-    with get_conn() as conn:
-        conn.execute("INSERT INTO groups (id, name) VALUES (?,?)", (gid, name))
+    with session_scope() as s:
+        s.add(Group(id=gid, name=_pg_safe_str(name)))
         for did in doc_ids or []:
-            conn.execute(
-                "INSERT OR IGNORE INTO group_members (group_id, doc_id) VALUES (?,?)",
-                (gid, did),
-            )
+            s.add(GroupMember(group_id=gid, doc_id=did))
     return gid
 
 
 def update_group(group_id: str, name: Optional[str] = None, doc_ids: Optional[List[str]] = None) -> bool:
     init_db()
-    with get_conn() as conn:
-        row = conn.execute("SELECT 1 FROM groups WHERE id=?", (group_id,)).fetchone()
-        if not row:
+    with session_scope() as s:
+        g = s.get(Group, group_id)
+        if not g:
             return False
         if name is not None:
-            conn.execute("UPDATE groups SET name=? WHERE id=?", (name, group_id))
+            g.name = _pg_safe_str(name)
+            s.add(g)
         if doc_ids is not None:
-            conn.execute("DELETE FROM group_members WHERE group_id=?", (group_id,))
+            s.exec(delete(GroupMember).where(GroupMember.group_id == group_id))
             for did in doc_ids:
-                conn.execute(
-                    "INSERT INTO group_members (group_id, doc_id) VALUES (?,?)",
-                    (group_id, did),
-                )
-        return True
+                s.add(GroupMember(group_id=group_id, doc_id=did))
+    return True
 
 
 def get_group(group_id: str) -> Optional[Dict[str, Any]]:
@@ -277,10 +271,13 @@ def get_group(group_id: str) -> Optional[Dict[str, Any]]:
 
 def delete_group(group_id: str) -> bool:
     init_db()
-    with get_conn() as conn:
-        conn.execute("DELETE FROM group_members WHERE group_id=?", (group_id,))
-        cur = conn.execute("DELETE FROM groups WHERE id=?", (group_id,))
-        return cur.rowcount > 0
+    with session_scope() as s:
+        g = s.get(Group, group_id)
+        if not g:
+            return False
+        s.exec(delete(GroupMember).where(GroupMember.group_id == group_id))
+        s.delete(g)
+    return True
 
 
 # --- meta ---
@@ -288,15 +285,15 @@ def delete_group(group_id: str) -> bool:
 
 def get_meta(key: str, default: str = "") -> str:
     init_db()
-    with get_conn() as conn:
-        row = conn.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
-    return row[0] if row else default
+    with session_scope() as s:
+        r = s.get(AppMeta, key)
+    return r.value if r else default
 
 
 def set_meta(key: str, value: str) -> None:
     init_db()
-    with get_conn() as conn:
-        conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, value))
+    with session_scope() as s:
+        s.merge(AppMeta(key=key, value=value))
 
 
 def get_embedding_model() -> str:
@@ -312,29 +309,31 @@ def set_embedding_model(model: str) -> None:
 
 def append_chat_message(thread_id: str, role: str, content: str) -> None:
     init_db()
-    with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO chat_messages (thread_id, role, content) VALUES (?,?,?)",
-            (thread_id, role, content),
+    with session_scope() as s:
+        s.add(
+            ChatMessage(
+                thread_id=_pg_safe_str(thread_id),
+                role=_pg_safe_str(role),
+                content=_pg_safe_str(content),
+                created_at=int(time.time()),
+            )
         )
 
 
 def list_chat_messages(thread_id: str, limit: int = 40) -> List[Dict[str, Any]]:
     init_db()
-    with get_conn() as conn:
-        rows = conn.execute(
-            """SELECT id, role, content, created_at FROM chat_messages
-            WHERE thread_id=? ORDER BY id DESC LIMIT ?""",
-            (thread_id, limit),
-        ).fetchall()
-    rows = list(reversed(rows))
-    return [{"role": r["role"], "content": r["content"]} for r in rows]
+    with session_scope() as s:
+        sub = (
+            select(ChatMessage)
+            .where(ChatMessage.thread_id == thread_id)
+            .order_by(ChatMessage.id.desc())
+            .limit(limit)
+        )
+        rows = list(reversed(s.scalars(sub).all()))
+    return [{"role": r.role, "content": r.content} for r in rows]
 
 
 def clear_chat_thread(thread_id: str) -> None:
     init_db()
-    with get_conn() as conn:
-        conn.execute("DELETE FROM chat_messages WHERE thread_id=?", (thread_id,))
-
-
-init_db()
+    with session_scope() as s:
+        s.exec(delete(ChatMessage).where(ChatMessage.thread_id == thread_id))

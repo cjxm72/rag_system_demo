@@ -2,6 +2,8 @@
 端到端集成测试：入库 → 解析 → 建索引 → 知识组 → 问答（文档/法律/医疗/综合）→ 路由与引用。
 
 运行前请设置：
+  export DATABASE_URL=postgresql+psycopg://...
+  export MILVUS_URI=http://127.0.0.1:19530
   export SILICONFLOW_API_KEY=sk-xxx
 
 可选环境变量：
@@ -15,7 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers import default_settings, make_pdf_with_pymupdf, require_api_key
+from tests.helpers import (
+    consume_sse_query,
+    default_settings,
+    make_pdf_with_pymupdf,
+    print_sse_answer_preview,
+    require_api_key,
+)
 
 
 def _wait_document(client, doc_id: str, timeout: float = 180.0) -> dict:
@@ -35,15 +43,20 @@ def _wait_document(client, doc_id: str, timeout: float = 180.0) -> dict:
 
 def _upload(client, path: Path, settings: dict) -> str:
     raw = path.read_bytes()
+    data = {
+        "api_key": settings["api_key"],
+        "embedding_model": settings["embedding_model"],
+        "api_base": settings.get("api_base") or settings.get("embedding_api_base") or "",
+        "vision_model": settings.get("vision_model", "Qwen/Qwen2-VL-7B-Instruct"),
+        "embedding_provider": settings.get("embedding_provider", "siliconflow"),
+        "vision_provider": settings.get("vision_provider", "siliconflow"),
+    }
+    if settings.get("ollama_base_url"):
+        data["ollama_base_url"] = settings["ollama_base_url"]
     r = client.post(
         "/documents/upload",
         files=[("file", (path.name, raw, "application/octet-stream"))],
-        data={
-            "api_key": settings["api_key"],
-            "embedding_model": settings["embedding_model"],
-            "api_base": settings["api_base"],
-            "vision_model": settings.get("vision_model", "Qwen/Qwen2-VL-7B-Instruct"),
-        },
+        data=data,
     )
     assert r.status_code == 200, r.text
     uploaded = r.json().get("uploaded") or []
@@ -71,10 +84,7 @@ def test_ingest_txt_parse_and_index(client, tests_text_dir: Path):
     r = rag_query(
         question="违约后守约方有什么权利？",
         selected_groups=[],
-        api_key=s["api_key"],
-        embedding_model=s["embedding_model"],
-        reranker_model=s["reranker_model"],
-        api_base=s["api_base"],
+        settings=s,
         similarity_top_k=10,
         rerank_top_n=5,
     )
@@ -119,7 +129,8 @@ def test_query_document_citation_and_sources(client, tests_text_dir: Path):
     }
     r = client.post("/query", json=body)
     assert r.status_code == 200, r.text
-    data = r.json()
+    data = consume_sse_query(r)
+    print_sse_answer_preview("test_query_document_citation_and_sources", data)
     assert "【路由说明】" in data["answer"]
     assert "【引用文档】" in data["answer"]
     assert len(data.get("sources") or []) >= 1
@@ -156,22 +167,28 @@ def test_routing_medical_legal_mixed(client, tests_text_dir: Path):
         json={**base, "question": "高血压患者日常要注意什么？常见症状有哪些？"},
     )
     assert r1.status_code == 200, r1.text
-    assert "【路由说明】" in r1.json()["answer"]
-    assert "medical" in r1.json()["answer"]
+    d1 = consume_sse_query(r1)
+    print_sse_answer_preview("test_routing_medical (医疗)", d1)
+    assert "【路由说明】" in d1["answer"]
+    assert "medical" in d1["answer"]
 
     r2 = client.post(
         "/query",
         json={**base, "question": "合同违约时向法院起诉前要满足什么程序？"},
     )
     assert r2.status_code == 200, r2.text
-    assert "legal" in r2.json()["answer"]
+    d2 = consume_sse_query(r2)
+    print_sse_answer_preview("test_routing_medical_legal_mixed (法律)", d2)
+    assert "legal" in d2["answer"]
 
     r3 = client.post(
         "/query",
         json={**base, "question": "医院手术出现纠纷，合同里的免责条款还有效吗？能怎么索赔？"},
     )
     assert r3.status_code == 200, r3.text
-    assert "mixed" in r3.json()["answer"]
+    d3 = consume_sse_query(r3)
+    print_sse_answer_preview("test_routing_medical_legal_mixed (综合)", d3)
+    assert "mixed" in d3["answer"]
 
 
 @pytest.mark.integration
@@ -198,13 +215,15 @@ def test_per_model_settings_coordinator_members(client, tests_text_dir: Path):
     }
     r = client.post("/query", json=body)
     assert r.status_code == 200, r.text
-    assert "【路由说明】" in r.json()["answer"]
-    assert "【引用文档】" in r.json()["answer"]
+    d = consume_sse_query(r)
+    print_sse_answer_preview("test_per_model_settings_coordinator_members", d)
+    assert "【路由说明】" in d["answer"]
+    assert "【引用文档】" in d["answer"]
 
 
 @pytest.mark.integration
-def test_query_stream_contains_citation_block(client, tests_text_dir: Path):
-    """流式接口：完整响应文本末尾含【引用文档】。"""
+def test_query_sse_contains_citation_block(client, tests_text_dir: Path):
+    """SSE /query：聚合后文本含【路由说明】与【引用文档】。"""
     require_api_key()
     s = {**default_settings(), "max_tokens": 700, "temperature": 0.2}
     did = _upload(client, tests_text_dir / "legal_sample.txt", s)
@@ -212,7 +231,7 @@ def test_query_stream_contains_citation_block(client, tests_text_dir: Path):
     gid = _create_group_with_docs(client, "流式组", [did])
 
     resp = client.post(
-        "/query/stream",
+        "/query",
         json={
             "question": "摘要一下文档里关于违约与赔偿的条款。",
             "groups": [{"id": gid, "priority": 1.0}],
@@ -221,12 +240,13 @@ def test_query_stream_contains_citation_block(client, tests_text_dir: Path):
         },
     )
     assert resp.status_code == 200
-    full = resp.text
-    assert "【路由说明】" in full
-    assert "【引用文档】" in full
+    d = consume_sse_query(resp)
+    print_sse_answer_preview("test_query_sse_contains_citation_block", d)
+    assert "【路由说明】" in d["answer"]
+    assert "【引用文档】" in d["answer"]
 
 
-def test_health_no_key(client):
+def test_health_no_key(bare_client):
     """无 API Key 时仍可访问文档列表（可能为空）。"""
-    r = client.get("/documents")
+    r = bare_client.get("/documents")
     assert r.status_code == 200

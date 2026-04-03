@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from rag_demo.agents.agno_team import run_team_answer
+from rag_demo.api.sse import sse_encode
+from rag_demo.core.provider_settings import finalize_settings
 from rag_demo.eval.eval_rag import EvalItem, evaluate_items
 from rag_demo.parsing.doc_parser import parse_file
 from rag_demo.parsing.vision_api import describe_image
@@ -31,20 +33,31 @@ from rag_demo.storage.store import (
 
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-app = FastAPI(title="企业数据管理秘书 · RAG（Chroma + SQLite + Agno Team）")
+app = FastAPI(title="企业数据管理秘书 · RAG（Milvus + PostgreSQL + SSE + Agno Team）")
 
 
 class RequestSettings(BaseModel):
     api_key: Optional[str] = None
     api_base: Optional[str] = None
+    embedding_provider: Optional[str] = None
+    embedding_api_base: Optional[str] = None
+    embedding_api_key: Optional[str] = None
     embedding_model: Optional[str] = None
+    rerank_provider: Optional[str] = None
+    rerank_api_base: Optional[str] = None
+    rerank_api_key: Optional[str] = None
     reranker_model: Optional[str] = None
     llm_provider: Optional[str] = None
+    llm_api_base: Optional[str] = None
+    llm_api_key: Optional[str] = None
     llm_model: Optional[str] = None
     llm_model_medical: Optional[str] = None
     llm_model_legal: Optional[str] = None
     llm_model_coordinator: Optional[str] = None
     ollama_base_url: Optional[str] = None
+    vision_provider: Optional[str] = None
+    vision_api_base: Optional[str] = None
+    vision_api_key: Optional[str] = None
     vision_model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
@@ -76,6 +89,8 @@ class SourceItem(BaseModel):
 
 
 class QueryResponse(BaseModel):
+    """保留用于 OpenAPI 说明；问答接口已改为 SSE，不再返回本模型。"""
+
     answer: str
     thread_id: str
     sources: List[SourceItem] = Field(default_factory=list)
@@ -90,46 +105,82 @@ def _normalize_base_url(url: str) -> str:
     return "https://" + u.lstrip("/")
 
 
+def _validate_resolved_settings(settings: dict, *, require_vision_model: bool) -> None:
+    if settings["embedding_provider"] in ("siliconflow", "openai") and not settings["embedding_api_key"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Embedding 使用硅基或 OpenAI 时需填写 API Key（或专用 embedding_api_key）",
+        )
+    if settings["rerank_provider"] == "siliconflow" and not settings["rerank_api_key"]:
+        raise HTTPException(status_code=400, detail="Rerank 使用硅基时需填写 API Key（或专用 rerank_api_key）")
+    if settings["llm_provider"] in ("siliconflow", "openai") and not settings["llm_api_key"]:
+        raise HTTPException(status_code=400, detail="回答模型使用硅基或 OpenAI 时需填写 API Key（或专用 llm_api_key）")
+    if require_vision_model and settings["vision_provider"] in ("siliconflow", "openai") and not settings["vision_api_key"]:
+        raise HTTPException(status_code=400, detail="视觉模型使用硅基或 OpenAI 时需填写 API Key（或专用 vision_api_key）")
+
+
 def _settings_dict(s: Optional[RequestSettings], *, require_vision_model: bool = True) -> dict:
     if not s:
         raise HTTPException(status_code=400, detail="缺少 settings（前端需从 LocalStorage 传入 settings）")
-
-    api_base = _normalize_base_url(s.api_base or "")
-    ollama_base = (s.ollama_base_url or "").strip()
-    if ollama_base and not (ollama_base.startswith("http://") or ollama_base.startswith("https://")):
-        ollama_base = "http://" + ollama_base.lstrip("/")
-
-    settings = {
-        "api_key": s.api_key or "",
-        "api_base": api_base,
-        "embedding_model": (s.embedding_model or "").strip(),
-        "reranker_model": (s.reranker_model or "").strip(),
-        "llm_provider": (s.llm_provider or "").strip(),
-        "llm_model": (s.llm_model or "").strip(),
-        "llm_model_medical": s.llm_model_medical,
-        "llm_model_legal": s.llm_model_legal,
-        "llm_model_coordinator": s.llm_model_coordinator,
-        "ollama_base_url": ollama_base,
-        "vision_model": (s.vision_model or "").strip(),
-        "temperature": s.temperature,
-        "max_tokens": s.max_tokens,
-    }
+    settings = {k: v for k, v in s.model_dump().items() if v is not None}
+    finalize_settings(settings)
     required = [
-        "api_key",
-        "api_base",
         "embedding_model",
         "reranker_model",
-        "llm_provider",
         "llm_model",
         "temperature",
         "max_tokens",
     ]
     if require_vision_model:
         required.append("vision_model")
-    missing = [k for k in required if not settings.get(k)]
+    missing = [k for k in required if settings.get(k) is None or str(settings.get(k) or "").strip() == ""]
     if missing:
         raise HTTPException(status_code=400, detail=f"settings 缺少字段: {', '.join(missing)}")
+    _validate_resolved_settings(settings, require_vision_model=require_vision_model)
     return settings
+
+
+def _ingest_settings_from_form(
+    *,
+    api_key: str,
+    api_base: str,
+    embedding_model: str,
+    vision_model: str,
+    embedding_provider: str,
+    embedding_api_base: Optional[str],
+    embedding_api_key: Optional[str],
+    vision_provider: str,
+    vision_api_base: Optional[str],
+    vision_api_key: Optional[str],
+    ollama_base_url: Optional[str],
+) -> dict:
+    d = {
+        "api_key": api_key,
+        "api_base": _normalize_base_url(api_base),
+        "embedding_model": embedding_model,
+        "vision_model": vision_model,
+        "embedding_provider": (embedding_provider or "siliconflow").strip(),
+        "vision_provider": (vision_provider or "siliconflow").strip(),
+        "ollama_base_url": (ollama_base_url or "").strip() or None,
+    }
+    if embedding_api_base:
+        d["embedding_api_base"] = embedding_api_base
+    if embedding_api_key:
+        d["embedding_api_key"] = embedding_api_key
+    if vision_api_base:
+        d["vision_api_base"] = vision_api_base
+    if vision_api_key:
+        d["vision_api_key"] = vision_api_key
+    finalize_settings(d, include_rerank=False, include_llm=False)
+    if not (embedding_model or "").strip():
+        raise HTTPException(status_code=400, detail="缺少 embedding_model")
+    if not (vision_model or "").strip():
+        raise HTTPException(status_code=400, detail="缺少 vision_model")
+    if d["embedding_provider"] in ("siliconflow", "openai") and not d["embedding_api_key"]:
+        raise HTTPException(status_code=400, detail="Embedding 使用硅基或 OpenAI 时需填写 API Key")
+    if d["vision_provider"] in ("siliconflow", "openai") and not d["vision_api_key"]:
+        raise HTTPException(status_code=400, detail="视觉解析使用硅基或 OpenAI 时需填写 API Key")
+    return d
 
 
 static_dir = os.path.join(project_root, "static")
@@ -164,9 +215,9 @@ def _user_visible_question(req: QueryRequest, settings: dict) -> str:
     if req.image_base64:
         desc = describe_image(
             req.image_base64,
-            api_key=settings.get("api_key") or "",
+            api_key=settings.get("vision_api_key") or "",
             vision_model=settings.get("vision_model") or "",
-            api_base=settings.get("api_base") or "",
+            api_base=settings.get("vision_api_base") or "",
         )
         q = f"[图片内容]\n{desc}\n\n[用户问题]\n{q}"
     return q
@@ -206,8 +257,9 @@ def _sources_from_rag(doc_ids: List[str]) -> List[SourceItem]:
     return out
 
 
-@app.post("/query", response_model=QueryResponse)
-async def post_query(req: QueryRequest):
+@app.post("/query")
+async def post_query_sse(req: QueryRequest):
+    """问答唯一出口：SSE（text/event-stream），事件类型见前端解析逻辑。"""
     try:
         settings = _settings_dict(req.settings)
         prior = list_chat_messages(req.thread_id)
@@ -219,62 +271,10 @@ async def post_query(req: QueryRequest):
         append_chat_message(req.thread_id, "user", user_visible)
         groups_payload = _groups_payload(req)
 
-        api_key = settings.get("api_key") or ""
-        api_base = settings.get("api_base") or ""
         rag_res = rag_query(
             question=q_for_rag,
             selected_groups=groups_payload,
-            api_key=api_key,
-            embedding_model=settings.get("embedding_model") or "",
-            reranker_model=settings.get("reranker_model") or "",
-            api_base=api_base,
-            rerank_top_n=5,
-            similarity_top_k=10,
-        )
-
-        footer = format_citation_footer(rag_res.citation_doc_ids)
-        answer, decision, _ = run_team_answer(
-            question=q_for_rag,
-            context=rag_res.context_text,
             settings=settings,
-            stream=False,
-            route_question=user_visible,
-        )
-        body = (answer or "").strip()
-        body = f"【路由说明】{decision.domain}（{decision.reason}）\n\n{body}{footer}"
-        append_chat_message(req.thread_id, "assistant", body.strip())
-
-        return QueryResponse(
-            answer=body.strip(),
-            thread_id=req.thread_id,
-            sources=_sources_from_rag(rag_res.citation_doc_ids),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/query/stream")
-async def post_query_stream(req: QueryRequest):
-    try:
-        settings = _settings_dict(req.settings)
-        prior = list_chat_messages(req.thread_id)
-        if not prior:
-            prior = _fallback_history(req)
-
-        user_visible = _user_visible_question(req, settings)
-        q_for_rag = _question_for_rag(user_visible, prior)
-        append_chat_message(req.thread_id, "user", user_visible)
-        groups_payload = _groups_payload(req)
-
-        api_key = settings.get("api_key") or ""
-        api_base = settings.get("api_base") or ""
-        rag_res = rag_query(
-            question=q_for_rag,
-            selected_groups=groups_payload,
-            api_key=api_key,
-            embedding_model=settings.get("embedding_model") or "",
-            reranker_model=settings.get("reranker_model") or "",
-            api_base=api_base,
             rerank_top_n=5,
             similarity_top_k=10,
         )
@@ -288,21 +288,38 @@ async def post_query_stream(req: QueryRequest):
             route_question=user_visible,
         )
 
+        sources = _sources_from_rag(rag_res.citation_doc_ids)
+
         def gen():
-            buf: List[str] = []
-            yield f"【路由说明】{decision.domain}（{decision.reason}）\n\n"
+            route_line = f"【路由说明】{decision.domain}（{decision.reason}）\n\n"
+            buf: List[str] = [route_line]
+            yield sse_encode({"type": "route", "domain": decision.domain, "reason": decision.reason})
             try:
                 assert it is not None
                 for t in it:
                     buf.append(t)
-                    yield t
+                    yield sse_encode({"type": "chunk", "text": t})
             except Exception as e:
-                yield f"\n\n[STREAM_ERROR] {e}"
-            yield footer
-            full = "".join(buf) + footer
-            append_chat_message(req.thread_id, "assistant", full.strip())
+                yield sse_encode({"type": "error", "message": str(e)})
+                return
+            buf.append(footer)
+            yield sse_encode({"type": "chunk", "text": footer})
+            yield sse_encode(
+                {
+                    "type": "sources",
+                    "items": [{"doc_id": s.doc_id, "name": s.name} for s in sources],
+                }
+            )
+            yield sse_encode({"type": "done", "thread_id": req.thread_id})
+            append_chat_message(req.thread_id, "assistant", "".join(buf).strip())
 
-        return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream; charset=utf-8",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -320,24 +337,32 @@ async def upload_document(
     embedding_model: str = Form(...),
     api_base: str = Form(...),
     vision_model: str = Form(...),
+    embedding_provider: str = Form("siliconflow"),
+    embedding_api_base: Optional[str] = Form(None),
+    embedding_api_key: Optional[str] = Form(None),
+    vision_provider: str = Form("siliconflow"),
+    vision_api_base: Optional[str] = Form(None),
+    vision_api_key: Optional[str] = Form(None),
+    ollama_base_url: Optional[str] = Form(None),
 ):
     if not file:
         raise HTTPException(400, "缺少文件")
     upload_dir = os.path.join(project_root, "data", "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     results = []
-    api_base = _normalize_base_url(api_base)
-    missing = []
-    if not (api_key or "").strip():
-        missing.append("api_key")
-    if not (embedding_model or "").strip():
-        missing.append("embedding_model")
-    if not (api_base or "").strip():
-        missing.append("api_base")
-    if not (vision_model or "").strip():
-        missing.append("vision_model")
-    if missing:
-        raise HTTPException(status_code=400, detail=f"表单缺少字段: {', '.join(missing)}")
+    ingest = _ingest_settings_from_form(
+        api_key=api_key,
+        api_base=api_base,
+        embedding_model=embedding_model,
+        vision_model=vision_model,
+        embedding_provider=embedding_provider,
+        embedding_api_base=embedding_api_base,
+        embedding_api_key=embedding_api_key,
+        vision_provider=vision_provider,
+        vision_api_base=vision_api_base,
+        vision_api_key=vision_api_key,
+        ollama_base_url=ollama_base_url,
+    )
 
     for fup in file:
         if not fup.filename:
@@ -350,25 +375,25 @@ async def upload_document(
         doc_id = add_document_placeholder(name=fup.filename, path_or_note=path)
         results.append({"id": doc_id, "name": fup.filename, "status": "queued"})
 
-        def _parse_and_index(doc_id_inner: str, path_inner: str):
+        def _parse_and_index(doc_id_inner: str, path_inner: str, st: dict):
             try:
                 update_document(doc_id_inner, status="parsing", progress=10, error="")
                 text = parse_file(
                     path_inner,
-                    api_key=api_key or None,
-                    vision_model=vision_model or None,
-                    api_base=api_base,
+                    api_key=st.get("vision_api_key") or None,
+                    vision_model=st.get("vision_model") or None,
+                    api_base=st.get("vision_api_base") or "",
                 )
                 update_document(doc_id_inner, text=text, status="embedding", progress=70)
-                ensure_index(api_key, embedding_model, api_base, force_rebuild=True)
+                ensure_index(st, force_rebuild=True)
                 update_document(doc_id_inner, status="done", progress=100)
             except Exception as e:
                 update_document(doc_id_inner, status="error", progress=100, error=str(e))
 
         if background_tasks is not None:
-            background_tasks.add_task(_parse_and_index, doc_id, path)
+            background_tasks.add_task(_parse_and_index, doc_id, path, ingest.copy())
         else:
-            _parse_and_index(doc_id, path)
+            _parse_and_index(doc_id, path, ingest.copy())
 
     return {"uploaded": results}
 
@@ -431,7 +456,6 @@ class EvalRequest(BaseModel):
 @app.post("/evaluate")
 def evaluate(req: EvalRequest):
     try:
-        # 评估不涉及图片输入，不强制 vision_model
         settings = _settings_dict(req.settings, require_vision_model=False)
         items: List[EvalItem] = []
         for it in req.items:
@@ -441,6 +465,8 @@ def evaluate(req: EvalRequest):
                     groups_payload.append({"id": g.id, "priority": g.priority or 1.0})
             items.append(EvalItem(question=it.question, expected=it.expected, groups=groups_payload))
         return evaluate_items(items, settings=settings)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

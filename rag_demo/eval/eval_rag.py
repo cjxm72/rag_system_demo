@@ -13,6 +13,7 @@ import time
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
+from rag_demo.core.provider_settings import finalize_settings
 from rag_demo.rag.rag_system import query as rag_query
 from rag_demo.rag.siliconflow_embedding import SiliconFlowEmbedding
 
@@ -37,45 +38,43 @@ def _cosine(a: List[float], b: List[float]) -> float:
 
 
 def _initialize_llm(settings: Dict[str, Any]) -> ChatOpenAI:
+    finalize_settings(settings)
     provider = (settings.get("llm_provider") or "").lower()
-    api_base = settings.get("api_base") or ""
     model = settings.get("llm_model") or ""
     temperature = settings.get("temperature")
     max_tokens = settings.get("max_tokens")
+    base = (settings.get("llm_api_base") or "").rstrip("/")
+    api_key = (settings.get("llm_api_key") or "").strip()
 
     missing = []
     if not provider:
         missing.append("llm_provider")
-    if provider != "ollama" and not (settings.get("api_key") or "").strip():
-        missing.append("api_key")
-    if not api_base and provider != "ollama":
-        missing.append("api_base")
     if not model:
         missing.append("llm_model")
     if temperature is None:
         missing.append("temperature")
     if max_tokens is None:
         missing.append("max_tokens")
+    if not base:
+        missing.append("llm_api_base")
+    if provider in ("siliconflow", "openai") and not api_key:
+        missing.append("llm_api_key")
     if missing:
         raise ValueError("评估 settings 缺少字段: " + ", ".join(missing))
     temperature = float(temperature)
     max_tokens = int(max_tokens)
 
     if provider == "ollama":
-        base = (settings.get("ollama_base_url") or "http://localhost:11434/v1").rstrip("/")
         return ChatOpenAI(
             base_url=base,
-            api_key="ollama",
+            api_key=api_key or "ollama",
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
         )
 
-    api_key = settings.get("api_key") or ""
-    if not api_key:
-        raise ValueError("评估需要 api_key（硅基流动）")
     return ChatOpenAI(
-        base_url=api_base,
+        base_url=base,
         api_key=api_key,
         model=model,
         temperature=temperature,
@@ -96,16 +95,17 @@ def evaluate_items(
     top_k: Optional[int] = None,
     rerank_n: Optional[int] = None,
 ) -> Dict[str, Any]:
-    api_key = settings.get("api_key") or ""
-    api_base = settings.get("api_base") or ""
+    finalize_settings(settings)
     embedding_model = settings.get("embedding_model") or ""
     reranker_model = settings.get("reranker_model") or ""
+    emb_key = settings.get("embedding_api_key") or ""
+    emb_base = settings.get("embedding_api_base") or ""
 
     missing = []
-    if not api_key:
-        missing.append("api_key")
-    if not api_base:
-        missing.append("api_base")
+    if settings.get("embedding_provider") in ("siliconflow", "openai") and not emb_key:
+        missing.append("embedding_api_key 或 api_key")
+    if not emb_base:
+        missing.append("embedding_api_base")
     if not embedding_model:
         missing.append("embedding_model")
     if not reranker_model:
@@ -116,7 +116,7 @@ def evaluate_items(
     top_k = int(top_k or 10)
     rerank_n = int(rerank_n or 5)
 
-    embedder = SiliconFlowEmbedding(api_key=api_key, api_base=api_base, model=embedding_model)
+    embedder = SiliconFlowEmbedding(api_key=emb_key, api_base=emb_base, model=embedding_model)
     llm = _initialize_llm(settings)
 
     results = []
@@ -128,10 +128,7 @@ def evaluate_items(
         rag_res = rag_query(
             question=it.question,
             selected_groups=it.groups or [],
-            api_key=api_key,
-            embedding_model=embedding_model,
-            reranker_model=reranker_model,
-            api_base=api_base,
+            settings=settings,
             similarity_top_k=top_k,
             rerank_top_n=rerank_n,
         )
@@ -158,7 +155,9 @@ def evaluate_items(
                     continue
                 raise
         if last_err is not None:
-            raise RuntimeError(f"LLM 调用失败（可能被限流 429）。model={settings.get('llm_model')} base={settings.get('api_base')}. 原始错误: {last_err}") from last_err
+            raise RuntimeError(
+                f"LLM 调用失败（可能被限流 429）。model={settings.get('llm_model')} base={settings.get('llm_api_base')}. 原始错误: {last_err}"
+            ) from last_err
         t_llm = time.time()
 
         ea = embedder.get_text_embedding(answer or "")

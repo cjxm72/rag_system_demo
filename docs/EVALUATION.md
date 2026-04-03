@@ -33,7 +33,7 @@
 - `citation_doc_ids`：本轮引用涉及的 doc_id（用于文末 `【引用文档】`）
 - `chunks[]`：每个检索片段
   - `source_id`：上下文编号（对应 `[来源{source_id}]`）
-  - `doc_id`：文档 id（SQLite documents 表）
+  - `doc_id`：文档 id（PostgreSQL `documents` 表）
   - `chunk_index`：文档内 chunk 序号
   - `score`：（重排后）分数
   - `text`：chunk 原文（可用于论文附录/案例分析）
