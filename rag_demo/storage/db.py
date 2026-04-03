@@ -6,8 +6,6 @@ PostgreSQL 持久化（SQLModel）：文档、知识组、对话记忆。
 
 from __future__ import annotations
 
-import json
-import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -17,10 +15,6 @@ from sqlmodel import Session
 
 from rag_demo.storage.database import create_db_and_tables, session_scope
 from rag_demo.storage.models import AppMeta, ChatMessage, Document, Group, GroupMember
-
-_current_dir = os.path.dirname(os.path.abspath(__file__))
-_project_root = os.path.dirname(os.path.dirname(_current_dir))
-_LEGACY_JSON = os.path.join(_project_root, "data", "store.json")
 
 _initialized = False
 
@@ -38,7 +32,6 @@ def init_db() -> None:
     if _initialized:
         return
     create_db_and_tables()
-    _migrate_from_json_if_needed()
     _initialized = True
 
 
@@ -51,47 +44,6 @@ def truncate_all_tables() -> None:
         s.exec(delete(Document))
         s.exec(delete(ChatMessage))
         s.exec(delete(AppMeta))
-
-
-def _migrate_from_json_if_needed() -> None:
-    if not os.path.isfile(_LEGACY_JSON):
-        return
-    with session_scope() as s:
-        if s.scalars(select(Document).limit(1)).first():
-            return
-    try:
-        with open(_LEGACY_JSON, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except Exception:
-        return
-    docs = raw.get("documents") or []
-    groups = raw.get("groups") or []
-    emb = raw.get("embedding_model") or ""
-    with session_scope() as s:
-        for d in docs:
-            did = d.get("id")
-            if not did:
-                continue
-            s.add(
-                Document(
-                    id=did,
-                    name=_pg_safe_str(d.get("name")),
-                    path=_pg_safe_str(d.get("path")),
-                    text=_pg_safe_str(d.get("text")),
-                    status=_pg_safe_str(d.get("status")) or "done",
-                    progress=int(d.get("progress") or 0),
-                    error=_pg_safe_str(d.get("error")),
-                )
-            )
-        for g in groups:
-            gid = g.get("id")
-            if not gid:
-                continue
-            s.add(Group(id=gid, name=_pg_safe_str(g.get("name"))))
-            for did in g.get("doc_ids") or []:
-                s.add(GroupMember(group_id=gid, doc_id=did))
-        if emb:
-            s.merge(AppMeta(key="embedding_model", value=_pg_safe_str(emb)))
 
 
 # --- documents ---

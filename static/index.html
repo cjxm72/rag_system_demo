@@ -63,6 +63,34 @@
           </div>
           <div id="error" class="err" style="display:none"></div>
         </section>
+
+        <section>
+          <h2>论文：文档处理与检索流程（当前项目实现）</h2>
+          <p class="hint">此处用于论文写作快速复制。内容与 `docs/论文修改及流程图生成.md` 同步口径。</p>
+          <details open>
+            <summary style="cursor:pointer; font-weight:600; margin-bottom:8px;">1) 文档处理流程</summary>
+            <div style="white-space:pre-wrap; word-break:break-word; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px;">
+文档上传后首先进行格式识别：根据文件扩展名调用对应解析器；随后进行内容解析：
+- PDF：优先 OpenDataLoader PDF v2+（失败回退 PyMuPDF）
+- DOCX：使用 python-docx
+- 图片：使用 OpenAI 兼容多模态 Chat（由设置页的 vision 提供商决定）
+
+解析得到的文本会做轻量清洗（去除 NUL 字符、裁剪过长片段），然后进行文档切块：使用 SentenceSplitter 按长度切分，并设置 chunk_overlap，避免关键信息被截断。每个文档块记录元数据：doc_id、chunk_index、文档名（name）。最后进行向量化存储：调用 Embedding（硅基/OpenAI/Ollama 的 OpenAI 兼容 /embeddings）生成向量并存入 Milvus；同时将文档全文写入 PostgreSQL（SQLModel 管理）。
+            </div>
+          </details>
+
+          <details style="margin-top:10px;">
+            <summary style="cursor:pointer; font-weight:600; margin-bottom:8px;">2) 提问检索流程</summary>
+            <div style="white-space:pre-wrap; word-break:break-word; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px;">
+用户选择知识组并提问时执行如下流程：
+1) 根据用户选择的组 ID，从 PostgreSQL 读取 group_members，得到目标 doc_id 集合（支持多组选中与权重）。
+2) 将用户问题向量化（Embedding），在 Milvus 做相似度检索，召回 top-K 候选块；并在 Milvus 侧用 expr 过滤 doc_id∈目标集合。
+3) 对候选块按“组权重”做加权排序；如 rerank_provider=硅基且配置齐全，则调用硅基 /rerank 对候选块重排，取 top-N 作为最终上下文（若选择 OpenAI/Ollama 则不做在线 rerank，按向量/权重排序截断）。
+4) 拼装上下文：每条片段带 [来源i] + doc_id + chunk_index；回答结束后根据引用 doc_id 反查文档名，追加【引用文档】块；并通过 SSE 的 sources 事件返回引用列表。
+5) 路由与专家调用：由协调者模型基于用户问题输出 domain 与 delegates，自主决定调用 Medical / Legal 专家或由 Team coordinate 融合输出。
+            </div>
+          </details>
+        </section>
       </div>
 
       <aside class="side-pane">

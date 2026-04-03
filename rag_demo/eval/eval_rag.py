@@ -172,7 +172,7 @@ def evaluate_items(
                 "answer": answer,
                 "context": context,
                 "semantic_similarity": sim,
-                # 论文/调试友好明细
+                # 调试友好明细
                 "retrieval": {
                     "similarity_top_k": top_k,
                     "rerank_top_n": rerank_n,

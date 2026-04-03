@@ -3,7 +3,7 @@
 这是一个用于毕设展示的 RAG Demo，核心特点：
 
 - **向量库 Milvus**：独立向量服务，单 collection（默认 `rag_kb`）；chunk 含 `doc_id` 等元数据，知识组仍在业务侧映射。
-- **结构化存储 PostgreSQL**：文档/知识组/对话记忆由 **SQLModel** 建表；通过根目录 **`.env`** 中 `DATABASE_URL` 或 `POSTGRES_*` 连接（默认本机 `postgres` 库、`public` schema）；首次启动可从旧版 `data/store.json` 在空库时自动迁移。
+- **结构化存储 PostgreSQL**：文档/知识组/对话记忆由 **SQLModel** 建表；通过根目录 **`.env`** 中 `DATABASE_URL` 或 `POSTGRES_*` 连接（默认本机 `postgres` 库、`public` schema）。
 - **多提供商**：Embedding / Rerank / LLM / 视觉 均可独立选择 **硅基流动**、**OpenAI** 或 **Ollama**（OpenAI 兼容 HTTP）；Rerank 在 OpenAI/Ollama 下按向量分截断（无标准 rerank 接口）。
 - **问答输出**：仅 **`POST /query` SSE**（`text/event-stream`），不再提供 JSON 整包问答接口。
 - **PDF 解析 OpenDataLoader PDF v2+**：优先使用 `opendataloader-pdf`（需系统安装 **Java 11+**）；失败时回退 PyMuPDF。
@@ -69,11 +69,13 @@ uv run uvicorn rag_demo.api.main:app --host 0.0.0.0 --port 8001
 
 ## 文档
 
-- 架构与实现：`docs/ARCHITECTURE.md`
-- 毕设写作素材：`docs/THESIS_WRITING.md`
-- 调试记录：`docs/CHANGELOG_DEBUG.md`
-- **测试说明（pytest、环境变量、集成范围）**：`docs/TESTING.md`
-- **评估说明（论文用明细指标）**：`docs/EVALUATION.md`
+- 架构与实现：`docs/架构与实现说明.md`
+- 毕设写作素材：`docs/论文写作素材.md`
+- 调试记录：`docs/修改记录与错误修复日志.md`
+- **测试说明（pytest、环境变量、集成范围）**：`docs/测试说明.md`
+- **评估说明（论文用明细指标）**：`docs/评估说明.md`
+- **目录说明 + 建表 SQL + 索引（论文用）**：`docs/目录结构说明（论文用）.md`
+- **论文修改及流程图生成（按当前项目实现）**：`docs/论文修改及流程图生成.md`
 
 ---
 
@@ -83,7 +85,7 @@ uv run uvicorn rag_demo.api.main:app --host 0.0.0.0 --port 8001
 uv sync --group dev
 # 不连外网（健康检查等）
 uv run pytest tests/ -m "not integration" -v
-# 完整集成：把 tests/test.env 里的 OPENAI_API_KEY 改成你的 Key，然后运行（详见 docs/TESTING.md）
+# 完整集成：把 tests/test.env 里的 OPENAI_API_KEY 改成你的 Key，然后运行（详见 docs/测试说明.md）
 set -a
 source tests/test.env
 set +a
@@ -94,4 +96,4 @@ uv run pytest tests/ -m integration -v
 
 ## 常见问题排查
 
-（真实故障可记入 `docs/CHANGELOG_DEBUG.md`。）
+（真实故障可记入 `docs/修改记录与错误修复日志.md`。）
