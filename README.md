@@ -63,7 +63,8 @@ uv run uvicorn rag_demo.api.main:app --host 0.0.0.0 --port 8001
 ## 关键配置（前端设置页）
 
 - Embedding / Reranker / 默认 LLM / 视觉模型：见设置页占位符。
-- 可选：`llm_model_medical`、`llm_model_legal`、`llm_model_coordinator`（不填则与默认 `llm_model` 相同）。
+- 可选：`llm_model_medical`、`llm_model_legal`（不填则与默认 `llm_model` 相同）。协调者路由与默认回答共用 `llm_model`。
+- Rerank：硅基走 `/rerank`；选 OpenAI 或 Ollama 时用 OpenAI 兼容 `/embeddings` 做余弦相似度重排（`reranker_model` 填 **embedding 模型 id**）。
 
 ---
 

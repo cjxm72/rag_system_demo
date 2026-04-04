@@ -27,6 +27,7 @@ from rag_demo.storage.store import (
     list_chat_messages,
     list_documents,
     list_groups,
+    search_groups,
     update_document,
     update_group,
 )
@@ -53,7 +54,6 @@ class RequestSettings(BaseModel):
     llm_model: Optional[str] = None
     llm_model_medical: Optional[str] = None
     llm_model_legal: Optional[str] = None
-    llm_model_coordinator: Optional[str] = None
     ollama_base_url: Optional[str] = None
     vision_provider: Optional[str] = None
     vision_api_base: Optional[str] = None
@@ -111,8 +111,14 @@ def _validate_resolved_settings(settings: dict, *, require_vision_model: bool) -
             status_code=400,
             detail="Embedding 使用硅基或 OpenAI 时需填写 API Key（或专用 embedding_api_key）",
         )
-    if settings["rerank_provider"] == "siliconflow" and not settings["rerank_api_key"]:
+    rp = settings["rerank_provider"]
+    if rp == "siliconflow" and not settings["rerank_api_key"]:
         raise HTTPException(status_code=400, detail="Rerank 使用硅基时需填写 API Key（或专用 rerank_api_key）")
+    if rp == "openai" and not settings["rerank_api_key"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Rerank 使用 OpenAI 兼容 embeddings 重排时需填写 API Key（或专用 rerank_api_key）",
+        )
     if settings["llm_provider"] in ("siliconflow", "openai") and not settings["llm_api_key"]:
         raise HTTPException(status_code=400, detail="回答模型使用硅基或 OpenAI 时需填写 API Key（或专用 llm_api_key）")
     if require_vision_model and settings["vision_provider"] in ("siliconflow", "openai") and not settings["vision_api_key"]:
@@ -409,26 +415,51 @@ def remove_document(doc_id: str):
 def get_groups():
     return {"groups": list_groups()}
 
+@app.get("/groups/search")
+def get_groups_search(q: str = "", type: str = "", limit: int = 50):
+    return {"groups": search_groups(q=q, type=type, limit=limit)}
+
 
 class GroupCreate(BaseModel):
     name: str
+    description: Optional[str] = ""
+    type: Optional[str] = ""
     doc_ids: Optional[List[str]] = None
 
 
 @app.post("/groups")
 def create_group(body: GroupCreate):
-    gid = add_group(name=body.name, doc_ids=body.doc_ids)
-    return {"id": gid, "name": body.name, "doc_ids": body.doc_ids or []}
+    gid = add_group(
+        name=body.name,
+        doc_ids=body.doc_ids,
+        description=body.description or "",
+        type=body.type or "",
+    )
+    return {
+        "id": gid,
+        "name": body.name,
+        "description": body.description or "",
+        "type": body.type or "",
+        "doc_ids": body.doc_ids or [],
+    }
 
 
 class GroupUpdate(BaseModel):
     name: Optional[str] = None
+    description: Optional[str] = None
+    type: Optional[str] = None
     doc_ids: Optional[List[str]] = None
 
 
 @app.put("/groups/{group_id}")
 def put_group(group_id: str, body: GroupUpdate):
-    ok = update_group(group_id, name=body.name, doc_ids=body.doc_ids)
+    ok = update_group(
+        group_id,
+        name=body.name,
+        description=body.description,
+        type=body.type,
+        doc_ids=body.doc_ids,
+    )
     if not ok:
         raise HTTPException(404, "知识组不存在")
     return {"ok": True}

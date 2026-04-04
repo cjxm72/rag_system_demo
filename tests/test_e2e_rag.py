@@ -193,8 +193,8 @@ def test_routing_medical_legal_mixed(client, tests_text_dir: Path):
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_per_model_settings_coordinator_members(client, tests_text_dir: Path):
-    """分别为医疗/法律/协调者指定模型（可与默认相同），仍能完成路由与带引用的回答。"""
+def test_per_model_settings_medical_legal_members(client, tests_text_dir: Path):
+    """分别为医疗/法律指定模型（可与默认相同），仍能完成路由与带引用的回答。"""
     require_api_key()
     s = {**default_settings(), "max_tokens": 700, "temperature": 0.2}
     did = _upload(client, tests_text_dir / "mixed_sample.txt", s)
@@ -210,13 +210,12 @@ def test_per_model_settings_coordinator_members(client, tests_text_dir: Path):
             **s,
             "llm_model_medical": llm,
             "llm_model_legal": llm,
-            "llm_model_coordinator": llm,
         },
     }
     r = client.post("/query", json=body)
     assert r.status_code == 200, r.text
     d = consume_sse_query(r)
-    print_sse_answer_preview("test_per_model_settings_coordinator_members", d)
+    print_sse_answer_preview("test_per_model_settings_medical_legal_members", d)
     assert "【路由说明】" in d["answer"]
     assert "【引用文档】" in d["answer"]
 

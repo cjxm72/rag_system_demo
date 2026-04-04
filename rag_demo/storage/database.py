@@ -28,9 +28,14 @@ def _load_dotenv() -> None:
     try:
         from dotenv import load_dotenv
 
-        p = _project_root() / ".env"
-        if p.is_file():
-            load_dotenv(p)
+        root = _project_root()
+        p_env = root / ".env"
+        p_example = root / ".env.example"
+        if p_env.is_file():
+            load_dotenv(p_env)
+        elif p_example.is_file():
+            # 允许在未生成 .env 时也能按示例默认值启动
+            load_dotenv(p_example)
     except ImportError:
         pass
 
@@ -67,6 +72,20 @@ def create_db_and_tables() -> None:
     import rag_demo.storage.models  # noqa: F401 — 注册 SQLModel 表到 metadata
 
     SQLModel.metadata.create_all(get_engine())
+
+    # 轻量“向前兼容迁移”：开发环境常直接 create_all，但不会自动加列。
+    # 这里仅对 groups 增加字段（description/type）做安全的 ADD COLUMN IF NOT EXISTS。
+    with get_engine().begin() as conn:
+        conn.exec_driver_sql(
+            "ALTER TABLE IF EXISTS public.groups "
+            "ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT ''"
+        )
+        conn.exec_driver_sql(
+            "ALTER TABLE IF EXISTS public.groups "
+            "ADD COLUMN IF NOT EXISTS type varchar(32) NOT NULL DEFAULT ''"
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_groups_type ON public.groups (type)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_groups_type_name ON public.groups (type, name)")
 
 
 @contextmanager

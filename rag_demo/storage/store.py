@@ -17,6 +17,7 @@ from rag_demo.storage.db import (  # noqa: F401
     list_chat_messages,
     list_documents,
     list_groups,
+    search_groups,
     set_embedding_model,
     update_document,
     update_group,

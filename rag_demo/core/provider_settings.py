@@ -1,6 +1,6 @@
 """
 将前端/请求中的「提供商 + 可选专用 Base/Key」解析为统一的 OpenAI 兼容 endpoint。
-支持：siliconflow / openai / ollama（均为 OpenAI 兼容 HTTP API，除 Rerank 见 rag_system）。
+支持：siliconflow / openai / ollama（Embedding、LLM、Vision 均为 OpenAI 兼容 HTTP；Rerank 硅基走 /rerank，OpenAI/Ollama 走 /embeddings 余弦重排，见 rag_system）。
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def finalize_settings(
 ) -> Dict[str, Any]:
     """
     写入派生字段：embedding_api_base / embedding_api_key / rerank_* / llm_* / vision_*。
-    兼容旧版仅填写 api_base（硅基）的场景：在 provider 为 siliconflow 时作为默认 Base。
+    仅填写 api_base（硅基）的场景在 provider 为 siliconflow 时作为默认 Base。
     include_rerank / include_llm 为 False 时跳过（供仅做文档入库的上传接口使用）。
     """
     ollama_raw = (d.get("ollama_base_url") or OLLAMA_DEFAULT_BASE).strip()

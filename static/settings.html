@@ -48,19 +48,19 @@
   <input type="text" id="embedding_model" placeholder="如 Qwen/Qwen3-Embedding-4B 或 text-embedding-3-small" />
 
   <h2>Reranker</h2>
-  <p class="subhint">OpenAI / Ollama 无标准 /rerank 接口时将按向量分数截断，不调用远程 Rerank。</p>
+  <p class="subhint">硅基流动：调用 <code>/rerank</code>。OpenAI / Ollama：使用 OpenAI 兼容 <code>/embeddings</code>，对「问题向量」与「各候选块向量」算余弦相似度重排（此时「模型名」请填 <strong>embedding 模型 id</strong>，与上方 Embedding 可相同）。</p>
   <label>提供商</label>
   <select id="rerank_provider">
     <option value="siliconflow">硅基流动</option>
-    <option value="openai">OpenAI（仅向量序）</option>
-    <option value="ollama">Ollama（仅向量序）</option>
+    <option value="openai">OpenAI（embeddings 余弦重排）</option>
+    <option value="ollama">Ollama（embeddings 余弦重排）</option>
   </select>
   <label>专用 API Base（可选）</label>
-  <input type="text" id="rerank_api_base" placeholder="仅硅基 Rerank 需要" />
+  <input type="text" id="rerank_api_base" placeholder="留空则用默认 Base；Ollama 常为 http://127.0.0.1:11434/v1" />
   <label>专用 API Key（可选）</label>
-  <input type="password" id="rerank_api_key" placeholder="留空则用默认 API Key" autocomplete="off" />
-  <label>模型名（硅基 Rerank 时必填）</label>
-  <input type="text" id="reranker_model" placeholder="如 Qwen/Qwen3-Reranker-0.6B" />
+  <input type="password" id="rerank_api_key" placeholder="留空则用默认 API Key；Ollama 可任意" autocomplete="off" />
+  <label>模型名</label>
+  <input type="text" id="reranker_model" placeholder="硅基填 Reranker id；OpenAI/Ollama 填 embedding 模型 id" />
 
   <h2>回答（LLM + 协调路由）</h2>
   <label>提供商</label>
@@ -73,14 +73,12 @@
   <input type="text" id="llm_api_base" placeholder="留空则用默认 Base / 官方默认" />
   <label>专用 API Key（可选）</label>
   <input type="password" id="llm_api_key" placeholder="留空则用默认 API Key" autocomplete="off" />
-  <label>默认回答模型</label>
+  <label>默认回答模型（兼协调者路由 JSON 输出，同一模型 id）</label>
   <input type="text" id="llm_model" placeholder="Pro/deepseek-ai/DeepSeek-V3.2 或 gpt-4o-mini" />
   <label>医疗 Agent 模型（可选）</label>
   <input type="text" id="llm_model_medical" placeholder="不填则与默认相同" />
   <label>法律 Agent 模型（可选）</label>
   <input type="text" id="llm_model_legal" placeholder="不填则与默认相同" />
-  <label>协调者模型（可选）</label>
-  <input type="text" id="llm_model_coordinator" placeholder="不填则与默认相同" />
 
   <h2>视觉 / 图片解析</h2>
   <label>提供商</label>
@@ -114,7 +112,7 @@
       "api_key", "api_base", "ollama_base_url",
       "embedding_provider", "embedding_api_base", "embedding_api_key", "embedding_model",
       "rerank_provider", "rerank_api_base", "rerank_api_key", "reranker_model",
-      "llm_provider", "llm_api_base", "llm_api_key", "llm_model", "llm_model_medical", "llm_model_legal", "llm_model_coordinator",
+      "llm_provider", "llm_api_base", "llm_api_key", "llm_model", "llm_model_medical", "llm_model_legal",
       "vision_provider", "vision_api_base", "vision_api_key", "vision_model",
       "temperature", "max_tokens"
     ];

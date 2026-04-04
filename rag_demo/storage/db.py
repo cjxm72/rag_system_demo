@@ -185,20 +185,49 @@ def list_groups() -> List[Dict[str, Any]]:
     by_gid: Dict[str, List[str]] = {}
     for m in members:
         by_gid.setdefault(m.group_id, []).append(m.doc_id)
-    return [{"id": r.id, "name": r.name, "doc_ids": by_gid.get(r.id, [])} for r in rows]
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "description": getattr(r, "description", "") or "",
+            "type": getattr(r, "type", "") or "",
+            "doc_ids": by_gid.get(r.id, []),
+        }
+        for r in rows
+    ]
 
 
-def add_group(name: str, doc_ids: Optional[List[str]] = None) -> str:
+def add_group(
+    name: str,
+    doc_ids: Optional[List[str]] = None,
+    *,
+    description: str = "",
+    type: str = "",
+) -> str:
     init_db()
     gid = str(uuid.uuid4())
     with session_scope() as s:
-        s.add(Group(id=gid, name=_pg_safe_str(name)))
+        s.add(
+            Group(
+                id=gid,
+                name=_pg_safe_str(name),
+                description=_pg_safe_str(description),
+                type=_pg_safe_str(type),
+            )
+        )
         for did in doc_ids or []:
             s.add(GroupMember(group_id=gid, doc_id=did))
     return gid
 
 
-def update_group(group_id: str, name: Optional[str] = None, doc_ids: Optional[List[str]] = None) -> bool:
+def update_group(
+    group_id: str,
+    name: Optional[str] = None,
+    doc_ids: Optional[List[str]] = None,
+    *,
+    description: Optional[str] = None,
+    type: Optional[str] = None,
+) -> bool:
     init_db()
     with session_scope() as s:
         g = s.get(Group, group_id)
@@ -207,11 +236,56 @@ def update_group(group_id: str, name: Optional[str] = None, doc_ids: Optional[Li
         if name is not None:
             g.name = _pg_safe_str(name)
             s.add(g)
+        if description is not None:
+            g.description = _pg_safe_str(description)
+            s.add(g)
+        if type is not None:
+            g.type = _pg_safe_str(type)
+            s.add(g)
         if doc_ids is not None:
             s.exec(delete(GroupMember).where(GroupMember.group_id == group_id))
             for did in doc_ids:
                 s.add(GroupMember(group_id=group_id, doc_id=did))
     return True
+
+
+def search_groups(*, q: str = "", type: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    知识组检索：按 name/description 模糊匹配（ILIKE），可选 type 精确过滤。
+    返回结构与 list_groups 一致（含 doc_ids）。
+    """
+    q = (q or "").strip()
+    type = (type or "").strip()
+    limit = max(1, min(200, int(limit)))
+
+    init_db()
+    with session_scope() as s:
+        stmt = select(Group)
+        if type:
+            stmt = stmt.where(Group.type == type)
+        if q:
+            like = f"%{q}%"
+            stmt = stmt.where((Group.name.ilike(like)) | (Group.description.ilike(like)))
+        rows = s.scalars(stmt.order_by(Group.name).limit(limit)).all()
+        if not rows:
+            return []
+        gids = [r.id for r in rows]
+        members = s.scalars(
+            select(GroupMember).where(GroupMember.group_id.in_(gids)).order_by(GroupMember.group_id, GroupMember.doc_id)
+        ).all()
+    by_gid: Dict[str, List[str]] = {}
+    for m in members:
+        by_gid.setdefault(m.group_id, []).append(m.doc_id)
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "description": getattr(r, "description", "") or "",
+            "type": getattr(r, "type", "") or "",
+            "doc_ids": by_gid.get(r.id, []),
+        }
+        for r in rows
+    ]
 
 
 def get_group(group_id: str) -> Optional[Dict[str, Any]]:

@@ -34,10 +34,16 @@ class Document(SQLModel, table=True):
 
 class Group(SQLModel, table=True):
     __tablename__ = "groups"
-    __table_args__ = (Index("ix_groups_name", "name"),)
+    __table_args__ = (
+        Index("ix_groups_name", "name"),
+        Index("ix_groups_type", "type"),
+        Index("ix_groups_type_name", "type", "name"),
+    )
 
     id: str = Field(primary_key=True, max_length=64)
     name: str = Field(default="")
+    description: str = Field(default="", sa_column=Column(Text, nullable=False))
+    type: str = Field(default="", max_length=32)
 
 
 class GroupMember(SQLModel, table=True):

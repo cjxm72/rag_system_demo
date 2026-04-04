@@ -4,6 +4,7 @@ RAG：OpenAI 兼容 Embedding（硅基 / OpenAI / Ollama）+ 可选硅基 Rerank
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from llama_index.core.node_parser import SentenceSplitter
@@ -12,6 +13,7 @@ from llama_index.core.schema import Document, NodeWithScore, TextNode
 from rag_demo.core.provider_settings import finalize_settings
 from rag_demo.rag import milvus_store
 from rag_demo.rag.siliconflow_embedding import SiliconFlowEmbedding
+from rag_demo.rag.embedding_rerank import postprocess_nodes_embedding_cosine
 from rag_demo.rag.siliconflow_rerank import SiliconFlowRerank
 from rag_demo.rag.types import RAGResult, RetrievedChunk
 from rag_demo.storage.db import get_documents_by_ids, get_meta, init_db, list_documents, list_groups, set_embedding_model, set_meta
@@ -19,6 +21,73 @@ from rag_demo.storage.db import get_documents_by_ids, get_meta, init_db, list_do
 TEXT_SPLITTER = SentenceSplitter(chunk_size=1024, chunk_overlap=200)
 
 _milvus_col = None
+
+
+def _tokenize_for_bm25(text: str) -> List[str]:
+    """BM25 分词：优先 jieba（中文按词），无 jieba 时降级为简单正则。"""
+    if not text:
+        return []
+    try:
+        import jieba  # type: ignore
+
+        toks = [t.strip().lower() for t in jieba.lcut(text) if t and t.strip()]
+        return toks
+    except Exception:
+        # fallback：英文数字按词，中文按单字
+        re_token = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]")
+        return [m.group(0).lower() for m in re_token.finditer(text)]
+
+
+def _minmax_norm(xs: List[float]) -> List[float]:
+    if not xs:
+        return []
+    lo = min(xs)
+    hi = max(xs)
+    if hi <= lo:
+        return [0.0 for _ in xs]
+    return [(x - lo) / (hi - lo) for x in xs]
+
+
+def _apply_bm25_hybrid(
+    *,
+    question: str,
+    nodes: List[NodeWithScore],
+    bm25_weight: float,
+) -> List[NodeWithScore]:
+    """
+    在候选集上做 BM25 关键词打分，并与向量/权重分数做 min-max 归一化融合。
+    fused = (1-bm25_weight)*vec + bm25_weight*bm25
+    """
+    if not nodes:
+        return nodes
+    try:
+        from rank_bm25 import BM25Okapi
+    except Exception:
+        # 未安装则退化为纯向量
+        nodes.sort(key=lambda x: float(x.score or 0.0), reverse=True)
+        return nodes
+    bm25_weight = max(0.0, min(1.0, float(bm25_weight)))
+    if bm25_weight <= 0:
+        nodes.sort(key=lambda x: float(x.score or 0.0), reverse=True)
+        return nodes
+
+    corpus_tokens = [_tokenize_for_bm25(n.node.get_content() or "") for n in nodes]
+    q_tokens = _tokenize_for_bm25(question or "")
+    if not q_tokens:
+        nodes.sort(key=lambda x: float(x.score or 0.0), reverse=True)
+        return nodes
+    bm25 = BM25Okapi(corpus_tokens)
+    bm25_scores = [float(x) for x in bm25.get_scores(q_tokens)]
+    vec_scores = [float(n.score or 0.0) for n in nodes]
+    bm25_n = _minmax_norm(bm25_scores)
+    vec_n = _minmax_norm(vec_scores)
+
+    fused: List[NodeWithScore] = []
+    for n, vn, bn in zip(nodes, vec_n, bm25_n):
+        s = (1.0 - bm25_weight) * vn + bm25_weight * bn
+        fused.append(NodeWithScore(node=n.node, score=s))
+    fused.sort(key=lambda x: float(x.score or 0.0), reverse=True)
+    return fused
 
 
 def _get_embedding_model(settings: Dict[str, Any]) -> SiliconFlowEmbedding:
@@ -132,12 +201,12 @@ def _apply_rerank(
     nodes: List[NodeWithScore],
     top_n: int,
 ) -> List[NodeWithScore]:
-    """仅 siliconflow 走 /rerank；openai/ollama 无标准 rerank 接口时按向量分数截断。"""
+    """硅基走 /rerank；OpenAI 与 Ollama 通过 OpenAI 兼容 /embeddings 做查询-文档余弦相似度重排。"""
     finalize_settings(settings)
     provider = (settings.get("rerank_provider") or "").lower()
     model = (settings.get("reranker_model") or "").strip()
-    api_key = settings.get("rerank_api_key") or ""
-    api_base = settings.get("rerank_api_base") or ""
+    api_key = (settings.get("rerank_api_key") or "").strip()
+    api_base = (settings.get("rerank_api_base") or "").strip()
     if provider == "siliconflow" and api_key and api_base and model:
         reranker = SiliconFlowRerank(
             api_key=api_key,
@@ -146,6 +215,22 @@ def _apply_rerank(
             top_n=top_n,
         )
         return reranker.postprocess_nodes(question, nodes)
+    if provider in ("ollama", "openai") and api_base and model:
+        if provider == "openai" and not api_key:
+            nodes.sort(key=lambda x: float(x.score or 0.0), reverse=True)
+            return nodes[:top_n]
+        try:
+            return postprocess_nodes_embedding_cosine(
+                query=question,
+                nodes=nodes,
+                api_base=api_base,
+                api_key=api_key or "ollama",
+                model=model,
+                top_n=top_n,
+            )
+        except Exception:
+            nodes.sort(key=lambda x: float(x.score or 0.0), reverse=True)
+            return nodes[:top_n]
     nodes.sort(key=lambda x: float(x.score or 0.0), reverse=True)
     return nodes[:top_n]
 
@@ -223,6 +308,14 @@ def query(
 
     nodes.sort(key=lambda x: float(x.score or 0.0), reverse=True)
     nodes = nodes[:similarity_top_k]
+
+    # BM25 混合检索：在向量候选集上做关键词打分并融合排序
+    bm25_w = settings.get("bm25_weight")
+    try:
+        bm25_w = float(bm25_w) if bm25_w is not None else 0.35
+    except Exception:
+        bm25_w = 0.35
+    nodes = _apply_bm25_hybrid(question=question, nodes=nodes, bm25_weight=bm25_w)
 
     nodes = _apply_rerank(settings=settings, question=question, nodes=nodes, top_n=rerank_top_n)
 

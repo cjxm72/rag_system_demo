@@ -86,7 +86,8 @@
 1) 根据用户选择的组 ID，从 PostgreSQL 读取 group_members，得到目标 doc_id 集合（支持多组选中与权重）。
 2) 将用户问题向量化（Embedding），在 Milvus 做相似度检索，召回 top-K 候选块；并在 Milvus 侧用 expr 过滤 doc_id∈目标集合。
 3) 对候选块按“组权重”做加权排序；如 rerank_provider=硅基且配置齐全，则调用硅基 /rerank 对候选块重排，取 top-N 作为最终上下文（若选择 OpenAI/Ollama 则不做在线 rerank，按向量/权重排序截断）。
-4) 拼装上下文：每条片段带 [来源i] + doc_id + chunk_index；回答结束后根据引用 doc_id 反查文档名，追加【引用文档】块；并通过 SSE 的 sources 事件返回引用列表。
+4) 混合排序：在向量召回的候选块上计算 BM25 关键词分数，与向量/组权重分数融合排序；如配置硅基 rerank 则再精排。
+5) 拼装上下文：每条片段带 [来源i] + doc_id + chunk_index；回答结束后根据引用 doc_id 反查文档名，追加【引用文档】块；并通过 SSE 的 sources 事件返回引用列表。
 5) 路由与专家调用：由协调者模型基于用户问题输出 domain 与 delegates，自主决定调用 Medical / Legal 专家或由 Team coordinate 融合输出。
             </div>
           </details>
@@ -99,6 +100,16 @@
           <div class="row" style="margin-bottom:8px;">
             <button id="createGroupBtn">新建知识组</button>
             <span class="hint">勾选参与本轮检索的组，可设置主/次组权重。</span>
+          </div>
+          <div class="row" style="margin-bottom:8px;">
+            <input id="groupSearchInput" placeholder="检索知识组：按名称/描述模糊匹配…" />
+            <select id="groupTypeFilter" style="max-width:160px;">
+              <option value="">全部类型</option>
+              <option value="legal">legal</option>
+              <option value="medical">medical</option>
+              <option value="finance">finance</option>
+              <option value="general">general</option>
+            </select>
           </div>
           <ul id="groupFilterList"></ul>
           <hr style="margin:12px 0;">
@@ -195,8 +206,14 @@
     }
 
     async function loadGroups() {
+      // 默认加载：支持后续做“检索知识组”时复用渲染逻辑
       const res = await api("GET", "/groups");
       allGroups = res.groups || [];
+      renderGroups(allGroups);
+    }
+
+    function renderGroups(groups) {
+      allGroups = groups || [];
 
       // 下拉：用于编辑组内文档
       const sel = document.getElementById("groupSelect");
@@ -204,7 +221,8 @@
       allGroups.forEach(g => {
         const o = document.createElement("option");
         o.value = g.id;
-        o.textContent = g.name || g.id;
+        const t = (g.type || "").trim();
+        o.textContent = (g.name || g.id) + (t ? ` [${t}]` : "");
         sel.appendChild(o);
       });
       sel.onchange = showGroupDocEdit;
@@ -222,7 +240,10 @@
         cb.type = "checkbox";
         cb.dataset.id = g.id;
         const nameSpan = document.createElement("span");
-        nameSpan.textContent = g.name || g.id;
+        const t = (g.type || "").trim();
+        nameSpan.textContent = (g.name || g.id) + (t ? ` [${t}]` : "");
+        const desc = (g.description || "").trim();
+        if (desc) nameSpan.title = desc;
         left.appendChild(cb);
         left.appendChild(nameSpan);
 
@@ -303,9 +324,30 @@
     document.getElementById("createGroupBtn").onclick = async () => {
       const name = prompt("知识组名称");
       if (!name) return;
-      await api("POST", "/groups", { name, doc_ids: [] });
+      const type = prompt("知识组 type（可选，例如 legal/medical/finance/general）", "general") || "";
+      const description = prompt("知识组描述 description（可选）", "") || "";
+      await api("POST", "/groups", { name, type, description, doc_ids: [] });
       loadGroups();
     };
+
+    async function searchGroupsUi() {
+      const q = (document.getElementById("groupSearchInput").value || "").trim();
+      const type = (document.getElementById("groupTypeFilter").value || "").trim();
+      if (!q && !type) {
+        loadGroups();
+        return;
+      }
+      const res = await api("GET", `/groups/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&limit=50`);
+      renderGroups(res.groups || []);
+    }
+
+    // 检索：输入框防抖
+    let _groupSearchTimer = null;
+    document.getElementById("groupSearchInput").addEventListener("input", () => {
+      if (_groupSearchTimer) clearTimeout(_groupSearchTimer);
+      _groupSearchTimer = setTimeout(searchGroupsUi, 220);
+    });
+    document.getElementById("groupTypeFilter").addEventListener("change", searchGroupsUi);
 
     document.getElementById("uploadBtn").onclick = async () => {
       const files = Array.from(document.getElementById("fileInput").files || []);
@@ -381,7 +423,6 @@
         llm_model: s.llm_model || "Pro/deepseek-ai/DeepSeek-V3.2",
         llm_model_medical: s.llm_model_medical || null,
         llm_model_legal: s.llm_model_legal || null,
-        llm_model_coordinator: s.llm_model_coordinator || null,
         vision_provider: s.vision_provider || "siliconflow",
         vision_api_base: s.vision_api_base || null,
         vision_api_key: s.vision_api_key || null,

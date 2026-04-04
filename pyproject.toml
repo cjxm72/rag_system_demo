@@ -21,8 +21,10 @@ dependencies = [
     "python-docx>=1.1.0",
     "python-multipart>=0.0.9",
     "pyyaml>=6.0.2",
+    "rank-bm25>=0.2.2",
     "sqlmodel>=0.0.22",
     "uvicorn>=0.35.0",
+    "jieba>=0.42.1",
 ]
 
 [tool.uv]

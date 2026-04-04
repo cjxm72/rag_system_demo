@@ -112,9 +112,9 @@ def _llm_route(question: str, settings: Dict[str, Any]) -> Tuple[TeamRouteDecisi
     _normalize_provider(settings)
     base_url, api_key = _llm_http_credentials(settings)
 
-    model = (settings.get("llm_model_coordinator") or settings.get("llm_model") or "").strip()
+    model = (settings.get("llm_model") or "").strip()
     if not model:
-        raise ValueError("settings 缺少 llm_model（协调者路由需要）")
+        raise ValueError("settings 缺少 llm_model（协调者路由与回答共用该模型 id）")
 
     llm = ChatOpenAI(base_url=base_url, api_key=api_key, model=model, temperature=0.0, max_tokens=200)
     sys = SystemMessage(
@@ -137,7 +137,6 @@ def _llm_route(question: str, settings: Dict[str, Any]) -> Tuple[TeamRouteDecisi
     try:
         obj = _json.loads(raw)
     except Exception:
-        # 兜底：如果模型没按 JSON 输出，直接按 general 处理（但 reason 会说明解析失败）
         return TeamRouteDecision(domain="general", reason="协调者路由输出非 JSON，已回退 general"), []
 
     domain = str(obj.get("domain") or "").strip()
@@ -257,9 +256,9 @@ def run_team_answer(
         raise ValueError("settings 缺少 llm_model（需由前端 LocalStorage 传入）")
     model_id_medical = settings.get("llm_model_medical") or fallback_model
     model_id_legal = settings.get("llm_model_legal") or fallback_model
-    model_id_coordinator = settings.get("llm_model_coordinator") or fallback_model
+    model_id_coordinator = fallback_model
 
-    # 由协调者模型做“路由+委派”决策（不再关键词匹配）
+    # 由协调者模型做“路由+委派”决策
     decision, delegates = _llm_route(route_question or question, settings)
 
     medical_agent, legal_agent, team = build_domain_team(
