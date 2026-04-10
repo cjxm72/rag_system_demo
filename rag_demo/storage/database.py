@@ -32,10 +32,11 @@ def _load_dotenv() -> None:
         p_env = root / ".env"
         p_example = root / ".env.example"
         if p_env.is_file():
-            load_dotenv(p_env)
+            # 以 .env 为准：覆盖进程中已有的同名环境变量，避免 export 过导致改动不生效
+            load_dotenv(p_env, override=True)
         elif p_example.is_file():
             # 允许在未生成 .env 时也能按示例默认值启动
-            load_dotenv(p_example)
+            load_dotenv(p_example, override=False)
     except ImportError:
         pass
 
